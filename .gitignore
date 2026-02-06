@@ -1,0 +1,26 @@
+# Binaries
+fusionapi
+*.exe
+
+# Frontend
+web/node_modules/
+web/dist/
+dist/
+.cache/
+
+# Data
+data/
+*.db
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Config with secrets
+# config.yaml  # 保留模板，但用户的实际配置不提交

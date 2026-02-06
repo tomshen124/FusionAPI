@@ -1,0 +1,29 @@
+# FusionAPI Configuration
+
+server:
+  host: "0.0.0.0"
+  port: 8080
+  api_key: ""  # 访问本网关的 key（可选，留空则不鉴权；填 "auto" 可自动生成）
+  admin_api_key: ""  # 管理 API key（可选，留空则 /api 不鉴权；填 "auto" 可自动生成）
+
+database:
+  path: "./data/fusion.db"
+
+health_check:
+  enabled: true
+  interval: 60          # 秒
+  timeout: 10           # 秒
+  failure_threshold: 3  # 连续失败多少次标记不可用
+
+routing:
+  strategy: "priority"  # priority | round-robin | weighted | least-latency
+  failover:
+    enabled: true
+    max_retries: 2
+
+logging:
+  level: "info"
+  retention_days: 7     # 日志保留天数
+
+# 源配置（也可通过 Web UI 管理）
+sources: []
