@@ -23,7 +23,7 @@ FusionAPI unifies multiple upstream providers (NewAPI, CPA, OpenAI, Anthropic, C
 ### Build from source
 
 ```bash
-git clone https://github.com/YOUR_USER/FusionAPI.git
+git clone https://github.com/tomshen124/FusionAPI.git
 cd FusionAPI
 
 # backend
@@ -56,6 +56,15 @@ docker run -d \
   -v $(pwd)/config.yaml:/app/config.yaml:ro \
   fusionapi
 ```
+
+### One-command install
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/tomshen124/FusionAPI/main/install.sh | bash
+```
+
+The installer tries GitHub release assets first.  
+If no release artifact is available, it falls back to building from source.
 
 ## Configuration
 
