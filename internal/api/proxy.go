@@ -19,16 +19,17 @@ import (
 
 // ProxyHandler 代理处理器
 type ProxyHandler struct {
-	router     *core.Router
-	manager    *core.SourceManager
-	translator *core.Translator
-	store      *store.Store
-	cfg        *config.Config
-	client     *http.Client
+	router      *core.Router
+	manager     *core.SourceManager
+	translator  *core.Translator
+	store       *store.Store
+	cfg         *config.Config
+	client      *http.Client
+	rateLimiter *core.RateLimiter
 }
 
 // NewProxyHandler 创建代理处理器
-func NewProxyHandler(router *core.Router, manager *core.SourceManager, translator *core.Translator, store *store.Store, cfg *config.Config) *ProxyHandler {
+func NewProxyHandler(router *core.Router, manager *core.SourceManager, translator *core.Translator, store *store.Store, cfg *config.Config, rateLimiter *core.RateLimiter) *ProxyHandler {
 	return &ProxyHandler{
 		router:     router,
 		manager:    manager,
@@ -38,6 +39,7 @@ func NewProxyHandler(router *core.Router, manager *core.SourceManager, translato
 		client: &http.Client{
 			Timeout: 5 * time.Minute, // 长超时用于流式响应
 		},
+		rateLimiter: rateLimiter,
 	}
 }
 
@@ -53,6 +55,18 @@ func (h *ProxyHandler) ChatCompletions(c *gin.Context) {
 			},
 		})
 		return
+	}
+
+	// Get client info
+	var clientInfo *model.ClientInfo
+	if ci, exists := c.Get("client_info"); exists {
+		clientInfo = ci.(*model.ClientInfo)
+	}
+
+	// Concurrent tracking
+	if clientInfo != nil && clientInfo.KeyID != "" && h.rateLimiter != nil {
+		h.rateLimiter.AcquireConcurrent(clientInfo.KeyID)
+		defer h.rateLimiter.ReleaseConcurrent(clientInfo.KeyID)
 	}
 
 	// 记录开始时间
@@ -80,14 +94,23 @@ func (h *ProxyHandler) ChatCompletions(c *gin.Context) {
 		// 转换请求
 		translatedReq := h.translator.TranslateRequest(&req, src)
 
-		// 转发请求
-		if req.Stream {
-			if h.handleStreamRequest(c, translatedReq, src, startTime, failoverFrom) {
+		// FC 兼容模式：
+		// - 源支持 FC：走原生透传
+		// - 源不支持 FC：走兼容层（模拟 tool_call 输出）
+		if req.HasTools() && !sourceSupportsFC(src, req.Model) {
+			if h.handleFCCompatRequest(c, &req, translatedReq, src, startTime, failoverFrom, clientInfo) {
 				return // 成功
 			}
 		} else {
-			if h.handleNormalRequest(c, translatedReq, src, startTime, failoverFrom) {
-				return // 成功
+			// 转发请求
+			if req.Stream {
+				if h.handleStreamRequest(c, translatedReq, src, startTime, failoverFrom, clientInfo) {
+					return // 成功
+				}
+			} else {
+				if h.handleNormalRequest(c, translatedReq, src, startTime, failoverFrom, clientInfo) {
+					return // 成功
+				}
 			}
 		}
 
@@ -97,7 +120,7 @@ func (h *ProxyHandler) ChatCompletions(c *gin.Context) {
 	}
 
 	// 所有尝试都失败
-	h.logRequest(&req, nil, nil, startTime, 500, lastError, failoverFrom)
+	h.logRequest(&req, nil, nil, startTime, 500, lastError, failoverFrom, clientInfo, false)
 	c.JSON(500, model.ErrorResponse{
 		Error: model.ErrorDetail{
 			Message: "All sources failed: " + lastError.Error(),
@@ -108,7 +131,7 @@ func (h *ProxyHandler) ChatCompletions(c *gin.Context) {
 }
 
 // handleNormalRequest 处理非流式请求
-func (h *ProxyHandler) handleNormalRequest(c *gin.Context, req *model.ChatCompletionRequest, src *model.Source, startTime time.Time, failoverFrom string) bool {
+func (h *ProxyHandler) handleNormalRequest(c *gin.Context, req *model.ChatCompletionRequest, src *model.Source, startTime time.Time, failoverFrom string, clientInfo *model.ClientInfo) bool {
 	// 构建请求
 	body, _ := json.Marshal(req)
 	httpReq, err := http.NewRequestWithContext(c.Request.Context(), "POST", src.BaseURL+"/v1/chat/completions", bytes.NewReader(body))
@@ -148,7 +171,7 @@ func (h *ProxyHandler) handleNormalRequest(c *gin.Context, req *model.ChatComple
 	h.updateSourceLatency(src, time.Since(startTime), nil)
 
 	// 记录日志
-	h.logRequest(req, &chatResp, src, startTime, resp.StatusCode, nil, failoverFrom)
+	h.logRequest(req, &chatResp, src, startTime, resp.StatusCode, nil, failoverFrom, clientInfo, false)
 
 	// 返回响应
 	c.JSON(resp.StatusCode, chatResp)
@@ -156,7 +179,7 @@ func (h *ProxyHandler) handleNormalRequest(c *gin.Context, req *model.ChatComple
 }
 
 // handleStreamRequest 处理流式请求
-func (h *ProxyHandler) handleStreamRequest(c *gin.Context, req *model.ChatCompletionRequest, src *model.Source, startTime time.Time, failoverFrom string) bool {
+func (h *ProxyHandler) handleStreamRequest(c *gin.Context, req *model.ChatCompletionRequest, src *model.Source, startTime time.Time, failoverFrom string, clientInfo *model.ClientInfo) bool {
 	// 构建请求
 	body, _ := json.Marshal(req)
 	httpReq, err := http.NewRequestWithContext(c.Request.Context(), "POST", src.BaseURL+"/v1/chat/completions", bytes.NewReader(body))
@@ -230,7 +253,7 @@ func (h *ProxyHandler) handleStreamRequest(c *gin.Context, req *model.ChatComple
 	h.updateSourceLatency(src, time.Since(startTime), nil)
 
 	// 记录日志（流式请求无法获取完整 token 统计）
-	h.logStreamRequest(req, src, startTime, totalTokens, failoverFrom)
+	h.logStreamRequest(req, src, startTime, totalTokens, failoverFrom, clientInfo, false)
 
 	return true
 }
@@ -274,7 +297,7 @@ func (h *ProxyHandler) updateSourceLatency(src *model.Source, latency time.Durat
 }
 
 // logRequest 记录请求日志
-func (h *ProxyHandler) logRequest(req *model.ChatCompletionRequest, resp *model.ChatCompletionResponse, src *model.Source, startTime time.Time, statusCode int, err error, failoverFrom string) {
+func (h *ProxyHandler) logRequest(req *model.ChatCompletionRequest, resp *model.ChatCompletionResponse, src *model.Source, startTime time.Time, statusCode int, err error, failoverFrom string, clientInfo *model.ClientInfo, fcCompatUsed bool) {
 	log := &model.RequestLog{
 		ID:           core.GenerateLogID(),
 		Timestamp:    startTime,
@@ -286,6 +309,7 @@ func (h *ProxyHandler) logRequest(req *model.ChatCompletionRequest, resp *model.
 		StatusCode:   statusCode,
 		LatencyMs:    time.Since(startTime).Milliseconds(),
 		FailoverFrom: failoverFrom,
+		FCCompatUsed: fcCompatUsed,
 	}
 
 	if src != nil {
@@ -303,11 +327,27 @@ func (h *ProxyHandler) logRequest(req *model.ChatCompletionRequest, resp *model.
 		log.TotalTokens = resp.Usage.TotalTokens
 	}
 
+	// Add client info
+	if clientInfo != nil {
+		log.ClientIP = clientInfo.IP
+		log.ClientTool = clientInfo.Tool
+		log.APIKeyID = clientInfo.KeyID
+	}
+
+	// Record success/error for auto-ban
+	if clientInfo != nil && clientInfo.KeyID != "" && h.rateLimiter != nil {
+		if log.Success {
+			h.rateLimiter.RecordSuccess(clientInfo.KeyID)
+		} else {
+			h.rateLimiter.RecordError(clientInfo.KeyID)
+		}
+	}
+
 	h.store.SaveLog(log)
 }
 
 // logStreamRequest 记录流式请求日志
-func (h *ProxyHandler) logStreamRequest(req *model.ChatCompletionRequest, src *model.Source, startTime time.Time, totalTokens int, failoverFrom string) {
+func (h *ProxyHandler) logStreamRequest(req *model.ChatCompletionRequest, src *model.Source, startTime time.Time, totalTokens int, failoverFrom string, clientInfo *model.ClientInfo, fcCompatUsed bool) {
 	log := &model.RequestLog{
 		ID:           core.GenerateLogID(),
 		Timestamp:    startTime,
@@ -322,6 +362,19 @@ func (h *ProxyHandler) logStreamRequest(req *model.ChatCompletionRequest, src *m
 		LatencyMs:    time.Since(startTime).Milliseconds(),
 		TotalTokens:  totalTokens,
 		FailoverFrom: failoverFrom,
+		FCCompatUsed: fcCompatUsed,
+	}
+
+	// Add client info
+	if clientInfo != nil {
+		log.ClientIP = clientInfo.IP
+		log.ClientTool = clientInfo.Tool
+		log.APIKeyID = clientInfo.KeyID
+	}
+
+	// Record success for auto-ban
+	if clientInfo != nil && clientInfo.KeyID != "" && h.rateLimiter != nil {
+		h.rateLimiter.RecordSuccess(clientInfo.KeyID)
 	}
 
 	h.store.SaveLog(log)

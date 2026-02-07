@@ -130,7 +130,7 @@ func setDefaults(cfg *Config) {
 		cfg.Server.Host = "0.0.0.0"
 	}
 	if cfg.Server.Port == 0 {
-		cfg.Server.Port = 8080
+		cfg.Server.Port = 18080
 	}
 	if cfg.Database.Path == "" {
 		cfg.Database.Path = "./data/fusion.db"

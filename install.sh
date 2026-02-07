@@ -126,13 +126,72 @@ if ! install_from_release; then
   install_from_source
 fi
 
+# Setup systemd service on Linux (if running as root or with sudo)
+setup_systemd() {
+  if [ "$OS" != "linux" ]; then return; fi
+  if ! command -v systemctl >/dev/null 2>&1; then return; fi
+
+  local service_file="/etc/systemd/system/fusionapi.service"
+  local can_write=false
+
+  if [ -w "/etc/systemd/system" ]; then
+    can_write=true
+  elif command -v sudo >/dev/null 2>&1; then
+    can_write=true
+  fi
+
+  if [ "$can_write" = false ]; then return; fi
+
+  local svc_content="[Unit]
+Description=FusionAPI - AI API Aggregation Gateway
+After=network.target
+
+[Service]
+Type=simple
+WorkingDirectory=${DATA_DIR}
+ExecStart=${INSTALL_DIR}/${BIN_NAME} -config ${DATA_DIR}/config.yaml
+Restart=on-failure
+RestartSec=5
+LimitNOFILE=65536
+
+[Install]
+WantedBy=multi-user.target"
+
+  if [ -w "/etc/systemd/system" ]; then
+    echo "$svc_content" > "$service_file"
+    systemctl daemon-reload
+    systemctl enable fusionapi
+    systemctl restart fusionapi
+  else
+    echo "$svc_content" | sudo tee "$service_file" >/dev/null
+    sudo systemctl daemon-reload
+    sudo systemctl enable fusionapi
+    sudo systemctl restart fusionapi
+  fi
+
+  echo "Systemd service installed and started."
+}
+
+setup_systemd
+
 echo ""
 echo "========================================="
 echo "FusionAPI installed successfully"
 echo "========================================="
 echo "Binary: ${INSTALL_DIR}/${BIN_NAME}"
 echo "Config: ${DATA_DIR}/config.yaml"
-echo "Run:    ${BIN_NAME} -config ${DATA_DIR}/config.yaml"
+if [ "$OS" = "linux" ] && command -v systemctl >/dev/null 2>&1; then
+  echo ""
+  echo "Service commands:"
+  echo "  systemctl status  fusionapi"
+  echo "  systemctl stop    fusionapi"
+  echo "  systemctl restart fusionapi"
+  echo "  journalctl -u fusionapi -f    # view logs"
+else
+  echo "Run:    ${BIN_NAME} -config ${DATA_DIR}/config.yaml"
+fi
+echo ""
+echo "Web UI: http://<your-ip>:18080"
 if [ "$INSTALL_DIR" = "$FALLBACK_INSTALL_DIR" ]; then
   echo ""
   echo "Add to PATH if needed:"

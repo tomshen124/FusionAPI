@@ -14,6 +14,16 @@ const router = createRouter({
       component: () => import('../views/Sources.vue')
     },
     {
+      path: '/cpa',
+      name: 'cpa',
+      component: () => import('../views/Cpa.vue')
+    },
+    {
+      path: '/api-keys',
+      name: 'api-keys',
+      component: () => import('../views/ApiKeys.vue')
+    },
+    {
       path: '/logs',
       name: 'logs',
       component: () => import('../views/Logs.vue')

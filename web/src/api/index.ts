@@ -49,6 +49,7 @@ export interface Source {
     latency: number
     balance: number
     last_error: string
+    model_providers?: Record<string, string>
   }
 }
 
@@ -69,6 +70,44 @@ export interface RequestLog {
   total_tokens: number
   error: string
   failover_from: string
+  client_ip?: string
+  client_tool?: string
+  api_key_id?: string
+  fc_compat_used?: boolean
+}
+
+export interface KeyDailyUsage {
+  date: string
+  request_count: number
+  success_count: number
+  fail_count: number
+  total_tokens: number
+  avg_latency_ms: number
+}
+
+export interface APIKey {
+  id: string
+  key: string
+  name: string
+  enabled: boolean
+  limits: KeyLimits
+  allowed_tools: string[]
+  created_at: string
+  last_used_at: string
+  daily_usage?: number
+}
+
+export interface KeyLimits {
+  rpm: number
+  daily_quota: number
+  concurrent: number
+  tool_quotas?: Record<string, number>
+}
+
+export interface ToolStats {
+  tool: string
+  request_count: number
+  last_used_at: string
 }
 
 export interface Stats {
@@ -191,10 +230,49 @@ export const statsApi = {
 // Config API
 export const configApi = {
   get: () => request<any>('/config'),
-  update: (config: any) => request<{ message: string }>('/config', {
+  update: (config: any) => request<{ message: string; restart_required?: boolean }>('/config', {
     method: 'PUT',
     body: JSON.stringify(config)
   })
+}
+
+// Keys API
+export const keysApi = {
+  list: () => request<{ data: APIKey[] }>('/keys').then(r => r.data || []),
+
+  get: (id: string) => request<{ data: APIKey }>(`/keys/${id}`).then(r => r.data),
+
+  create: (data: { name: string; limits?: KeyLimits; allowed_tools?: string[] }) =>
+    request<{ data: APIKey }>('/keys', {
+      method: 'POST',
+      body: JSON.stringify(data)
+    }).then(r => r.data),
+
+  update: (id: string, data: Partial<APIKey>) =>
+    request<{ data: APIKey }>(`/keys/${id}`, {
+      method: 'PUT',
+      body: JSON.stringify(data)
+    }).then(r => r.data),
+
+  delete: (id: string) =>
+    request<{ message: string }>(`/keys/${id}`, { method: 'DELETE' }),
+
+  rotate: (id: string) =>
+    request<{ data: APIKey }>(`/keys/${id}/rotate`, { method: 'POST' }).then(r => r.data),
+
+  block: (id: string) =>
+    request<{ data: APIKey }>(`/keys/${id}/block`, { method: 'PUT' }).then(r => r.data),
+
+  unblock: (id: string) =>
+    request<{ data: APIKey }>(`/keys/${id}/unblock`, { method: 'PUT' }).then(r => r.data),
+
+  getUsage: (id: string, days?: number) =>
+    request<{ data: KeyDailyUsage[] }>(`/keys/${id}/usage?days=${days || 7}`).then(r => r.data || []),
+}
+
+// Tools API
+export const toolsApi = {
+  stats: () => request<{ data: ToolStats[] }>('/tools/stats').then(r => r.data || [])
 }
 
 export const adminAuthApi = {

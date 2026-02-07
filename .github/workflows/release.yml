@@ -9,73 +9,83 @@ permissions:
   contents: write
 
 jobs:
-  build:
+  build-linux-amd64:
     runs-on: ubuntu-latest
-    strategy:
-      matrix:
-        include:
-          - goos: linux
-            goarch: amd64
-            suffix: linux-amd64
-          - goos: linux
-            goarch: arm64
-            suffix: linux-arm64
-          - goos: darwin
-            goarch: amd64
-            suffix: darwin-amd64
-          - goos: darwin
-            goarch: arm64
-            suffix: darwin-arm64
-
     steps:
       - uses: actions/checkout@v4
-
       - uses: actions/setup-go@v5
         with:
           go-version: '1.21'
-
       - uses: actions/setup-node@v4
         with:
           node-version: '20'
 
-      # 构建前端
       - name: Build frontend
-        run: |
-          cd web
-          npm install
-          npm run build
+        run: cd web && npm install --no-audit --no-fund && npm run build
 
-      # 构建后端
       - name: Build backend
         env:
-          GOOS: ${{ matrix.goos }}
-          GOARCH: ${{ matrix.goarch }}
-          CGO_ENABLED: 0
-        run: |
-          go build -ldflags="-s -w" -o fusionapi-${{ matrix.suffix }} ./cmd/fusionapi
+          GOOS: linux
+          GOARCH: amd64
+          CGO_ENABLED: 1
+        run: go build -ldflags="-s -w" -o fusionapi ./cmd/fusionapi
 
-      # 打包
       - name: Package
         run: |
-          mkdir -p release
-          cp fusionapi-${{ matrix.suffix }} release/
-          cp config.yaml release/
-          cp -r dist/web release/dist/web 2>/dev/null || true
-          cd release
-          tar czf ../fusionapi-${{ matrix.suffix }}.tar.gz .
+          mkdir -p pkg/dist
+          cp fusionapi pkg/
+          cp config.yaml pkg/
+          [ -d dist/web ] && cp -r dist/web pkg/dist/
+          cd pkg && tar czf ../fusionapi-linux-amd64.tar.gz .
 
-      - name: Upload artifact
-        uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v4
         with:
-          name: fusionapi-${{ matrix.suffix }}
-          path: fusionapi-${{ matrix.suffix }}.tar.gz
+          name: fusionapi-linux-amd64
+          path: fusionapi-linux-amd64.tar.gz
 
-  release:
-    needs: build
+  build-linux-arm64:
     runs-on: ubuntu-latest
     steps:
-      - name: Download artifacts
-        uses: actions/download-artifact@v4
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.21'
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Install cross-compiler
+        run: sudo apt-get update && sudo apt-get install -y gcc-aarch64-linux-gnu
+
+      - name: Build frontend
+        run: cd web && npm install --no-audit --no-fund && npm run build
+
+      - name: Build backend
+        env:
+          GOOS: linux
+          GOARCH: arm64
+          CGO_ENABLED: 1
+          CC: aarch64-linux-gnu-gcc
+        run: go build -ldflags="-s -w" -o fusionapi ./cmd/fusionapi
+
+      - name: Package
+        run: |
+          mkdir -p pkg/dist
+          cp fusionapi pkg/
+          cp config.yaml pkg/
+          [ -d dist/web ] && cp -r dist/web pkg/dist/
+          cd pkg && tar czf ../fusionapi-linux-arm64.tar.gz .
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: fusionapi-linux-arm64
+          path: fusionapi-linux-arm64.tar.gz
+
+  release:
+    needs: [build-linux-amd64, build-linux-arm64]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
         with:
           merge-multiple: true
 

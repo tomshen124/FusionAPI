@@ -21,6 +21,21 @@
           </svg>
           源管理
         </router-link>
+        <router-link to="/cpa" class="nav-item" :class="{ active: $route.path === '/cpa' }">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <path d="M7 20h10"/>
+            <path d="M10 8h4"/>
+            <path d="M8 4h8l1 4H7l1-4z"/>
+            <rect x="6" y="8" width="12" height="12" rx="2"/>
+          </svg>
+          CPA 反代
+        </router-link>
+        <router-link to="/api-keys" class="nav-item" :class="{ active: $route.path === '/api-keys' }">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <path d="M21 2l-2 2m-7.61 7.61a5.5 5.5 0 1 1-7.778 7.778 5.5 5.5 0 0 1 7.777-7.777zm0 0L15.5 7.5m0 0l3 3L22 7l-3-3m-3.5 3.5L19 4"/>
+          </svg>
+          API Keys
+        </router-link>
         <router-link to="/logs" class="nav-item" :class="{ active: $route.path === '/logs' }">
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
             <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/>

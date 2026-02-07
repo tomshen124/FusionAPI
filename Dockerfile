@@ -31,7 +31,7 @@ COPY --from=builder /app/config.yaml .
 RUN mkdir -p /app/data
 
 # 暴露端口
-EXPOSE 8080
+EXPOSE 18080
 
 # 运行
 CMD ["./fusionapi", "-config", "config.yaml"]

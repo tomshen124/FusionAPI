@@ -98,19 +98,48 @@
         </div>
       </div>
 
-      <!-- Server Info -->
+      <!-- Server Settings -->
       <div class="card" style="margin-bottom: 24px;">
         <div class="card-header">
-          <h3 class="card-title">服务器信息</h3>
+          <h3 class="card-title">服务器设置</h3>
+        </div>
+
+        <div style="display: grid; grid-template-columns: repeat(2, 1fr); gap: 16px;">
+          <div class="form-group">
+            <label class="form-label">监听地址</label>
+            <input
+              v-model.trim="config.server.host"
+              type="text"
+              class="form-input"
+              placeholder="0.0.0.0"
+            />
+          </div>
+
+          <div class="form-group">
+            <label class="form-label">端口</label>
+            <input
+              v-model.number="config.server.port"
+              type="number"
+              class="form-input"
+              min="1024"
+              max="65535"
+            />
+          </div>
+        </div>
+
+        <p style="font-size: 13px; color: var(--gray-500);">
+          修改监听地址或端口后，需要重启服务生效。
+        </p>
+      </div>
+
+      <div class="card" style="margin-bottom: 24px;">
+        <div class="card-header">
+          <h3 class="card-title">日志设置</h3>
         </div>
         <div style="display: grid; grid-template-columns: repeat(2, 1fr); gap: 16px;">
           <div>
-            <div style="font-size: 13px; color: var(--gray-500);">监听地址</div>
-            <div style="font-weight: 500;">{{ config.server?.host }}:{{ config.server?.port }}</div>
-          </div>
-          <div>
             <div style="font-size: 13px; color: var(--gray-500);">日志保留天数</div>
-            <div style="font-weight: 500;">{{ config.logging?.retention_days }} 天</div>
+            <div style="font-weight: 500;">{{ config.logging.retention_days }} 天</div>
           </div>
         </div>
       </div>
@@ -187,12 +216,17 @@ async function fetchConfig() {
 async function saveConfig() {
   saving.value = true
   try {
-    await configApi.update({
+    const result = await configApi.update({
+      server: config.value.server,
       routing: config.value.routing,
       health_check: config.value.health_check,
       logging: config.value.logging
     })
-    alert('设置已保存')
+    if (result.restart_required) {
+      alert('设置已保存。监听地址/端口已更新，请重启服务生效。')
+    } else {
+      alert('设置已保存')
+    }
   } catch (e: any) {
     alert('保存失败: ' + e.message)
   } finally {

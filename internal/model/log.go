@@ -30,6 +30,14 @@ type RequestLog struct {
 
 	// Failover 记录
 	FailoverFrom string `json:"failover_from,omitempty"`
+
+	// 客户端信息
+	ClientIP   string `json:"client_ip,omitempty"`
+	ClientTool string `json:"client_tool,omitempty"`
+	APIKeyID   string `json:"api_key_id,omitempty"`
+
+	// FC 兼容层
+	FCCompatUsed bool `json:"fc_compat_used,omitempty"`
 }
 
 // UsageStats 用量统计
@@ -67,11 +75,13 @@ type SourceStats struct {
 
 // LogQuery 日志查询参数
 type LogQuery struct {
-	SourceID  string    `form:"source_id"`
-	Model     string    `form:"model"`
-	Success   *bool     `form:"success"`
-	StartTime time.Time `form:"start_time"`
-	EndTime   time.Time `form:"end_time"`
-	Limit     int       `form:"limit"`
-	Offset    int       `form:"offset"`
+	SourceID   string    `form:"source_id"`
+	Model      string    `form:"model"`
+	Success    *bool     `form:"success"`
+	StartTime  time.Time `form:"start_time"`
+	EndTime    time.Time `form:"end_time"`
+	Limit      int       `form:"limit"`
+	Offset     int       `form:"offset"`
+	ClientTool string    `form:"client_tool"`
+	APIKeyID   string    `form:"api_key_id"`
 }

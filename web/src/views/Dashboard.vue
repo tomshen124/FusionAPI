@@ -66,6 +66,22 @@
       </table>
     </div>
 
+    <!-- Tool Distribution -->
+    <div class="card" style="margin-bottom: 24px;">
+      <div class="card-header">
+        <h3 class="card-title">工具分布</h3>
+      </div>
+      <div v-if="toolStats.length > 0" style="display: flex; flex-wrap: wrap; gap: 12px; padding: 16px;">
+        <div v-for="tool in toolStats" :key="tool.tool" class="stat-card" style="flex: 1; min-width: 150px;">
+          <div class="stat-label">{{ tool.tool }}</div>
+          <div class="stat-value">{{ tool.request_count }}</div>
+        </div>
+      </div>
+      <div v-else style="padding: 24px; text-align: center; color: var(--gray-500);">
+        暂无工具使用数据
+      </div>
+    </div>
+
     <!-- Recent Requests -->
     <div class="card">
       <div class="card-header">
@@ -114,11 +130,12 @@
 <script setup lang="ts">
 import { ref, computed, onMounted } from 'vue'
 import { useSourceStore } from '../stores/source'
-import { logsApi, statsApi, type RequestLog, type Stats } from '../api'
+import { logsApi, statsApi, toolsApi, type RequestLog, type Stats, type ToolStats } from '../api'
 
 const sourceStore = useSourceStore()
 const stats = ref<Stats | null>(null)
 const recentLogs = ref<RequestLog[]>([])
+const toolStats = ref<ToolStats[]>([])
 
 const sources = computed(() => sourceStore.sources)
 const status = computed(() => sourceStore.status)
@@ -161,6 +178,7 @@ onMounted(async () => {
   try {
     stats.value = await statsApi.get()
     recentLogs.value = await logsApi.list({ limit: 10 })
+    toolStats.value = await toolsApi.stats()
   } catch (e) {
     console.error('Failed to fetch data:', e)
   }

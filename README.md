@@ -15,7 +15,11 @@ FusionAPI unifies multiple upstream providers (NewAPI, CPA, OpenAI, Anthropic, C
 - CPA-specific adaptation with provider-aware FC capability checks
 - CPA model/provider auto-detection from `/v1/models`
 - Runtime config updates from Web UI with persistence to `config.yaml`
+- Dedicated CPA reverse-proxy page in Web UI (`/cpa`)
 - Optional auth for both proxy API and admin API
+- Multi-key management with per-key rate limits (RPM, daily quota, concurrent)
+- Tool detection for API clients (cursor, claude-code, codex-cli, continue, copilot, etc.)
+- API key blocking, unblocking, and rotation
 - Lightweight deployment (single binary + SQLite)
 
 ## Quick Start
@@ -38,7 +42,7 @@ cd ..
 ./fusionapi
 ```
 
-Open `http://localhost:8080`.
+Open `http://localhost:18080` (`/cpa` is the CPA reverse-proxy page).
 
 ### Docker
 
@@ -51,7 +55,7 @@ Or:
 ```bash
 docker build -t fusionapi .
 docker run -d \
-  -p 8080:8080 \
+  -p 18080:18080 \
   -v $(pwd)/data:/app/data \
   -v $(pwd)/config.yaml:/app/config.yaml:ro \
   fusionapi
@@ -73,7 +77,7 @@ Edit `config.yaml`:
 ```yaml
 server:
   host: "0.0.0.0"
-  port: 8080
+  port: 18080
   api_key: ""          # protects /v1/*; empty = disabled; "auto" = generate at startup
   admin_api_key: ""    # protects /api/*; empty = disabled; "auto" = generate at startup
 
@@ -139,6 +143,45 @@ Provider capability matrix:
 | codex    | yes | yes |
 | qwen     | no  | yes |
 
+## API Key Management
+
+FusionAPI supports multi-key management for fine-grained access control:
+
+### Features
+
+- **Multiple Keys**: Create independent API keys for different users or scenarios
+- **Rate Limits**: Configure per-key limits:
+  - RPM (requests per minute)
+  - Daily quota
+  - Concurrent requests
+- **Tool Detection**: Automatically identify calling tools (cursor, claude-code, codex-cli, etc.)
+- **Tool Whitelist**: Restrict keys to specific tools
+- **Key Lifecycle**: Block, unblock, rotate keys as needed
+
+### Usage
+
+Create a key via Web UI or API:
+
+```bash
+curl -X POST http://localhost:18080/api/keys \
+  -H "Authorization: Bearer your-admin-key" \
+  -H "Content-Type: application/json" \
+  -d '{"name": "Cursor Dev", "limits": {"rpm": 60, "daily_quota": 1000}}'
+```
+
+Use the generated key for `/v1/*` requests:
+
+```bash
+curl http://localhost:18080/v1/chat/completions \
+  -H "Authorization: Bearer sk-fa-generated-key" \
+  -d '...'
+```
+
+### Auth Priority
+
+1. Check `api_keys` table first (with rate limits and tool checks)
+2. Fall back to `server.api_key` if no match
+
 ## API Endpoints
 
 ### Proxy API (OpenAI-compatible)
@@ -149,7 +192,7 @@ Provider capability matrix:
 Example:
 
 ```bash
-curl http://localhost:8080/v1/chat/completions \
+curl http://localhost:18080/v1/chat/completions \
   -H "Content-Type: application/json" \
   -H "Authorization: Bearer your-api-key" \
   -d '{
@@ -169,11 +212,17 @@ curl http://localhost:8080/v1/chat/completions \
 - `GET /api/logs`
 - `GET /api/stats`
 - `GET/PUT /api/config`
+- `GET/POST /api/keys` - Key management
+- `GET/PUT/DELETE /api/keys/:id` - Single key operations
+- `POST /api/keys/:id/rotate` - Rotate key
+- `PUT /api/keys/:id/block` - Block key
+- `PUT /api/keys/:id/unblock` - Unblock key
+- `GET /api/tools/stats` - Tool usage statistics
 
 When `admin_api_key` is set:
 
 ```bash
-curl http://localhost:8080/api/status \
+curl http://localhost:18080/api/status \
   -H "Authorization: Bearer your-admin-api-key"
 ```
 
@@ -205,9 +254,30 @@ FusionAPI/
 │   ├── api/
 │   ├── config/
 │   ├── core/
+│   │   ├── health.go
+│   │   ├── router.go
+│   │   ├── source.go
+│   │   ├── translator.go
+│   │   ├── ratelimit.go
+│   │   └── tooldetect.go
 │   ├── model/
+│   │   ├── source.go
+│   │   ├── request.go
+│   │   ├── log.go
+│   │   └── apikey.go
 │   └── store/
 ├── web/
+│   ├── src/
+│   │   ├── views/
+│   │   │   ├── Dashboard.vue
+│   │   │   ├── Sources.vue
+│   │   │   ├── Logs.vue
+│   │   │   ├── Settings.vue
+│   │   │   ├── Cpa.vue
+│   │   │   └── ApiKeys.vue
+│   │   └── stores/
+│   │       ├── source.ts
+│   │       └── apikey.ts
 ├── config.yaml
 ├── Dockerfile
 └── docker-compose.yml

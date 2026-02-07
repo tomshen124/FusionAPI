@@ -1,7 +1,10 @@
 package api
 
 import (
+	"fmt"
+	"strings"
 	"sync"
+	"time"
 
 	"github.com/gin-gonic/gin"
 	"github.com/xiaopang/fusionapi/internal/config"
@@ -253,7 +256,7 @@ func (h *AdminHandler) GetHealth(c *gin.Context) {
 
 	for _, src := range sources {
 		status := src.GetStatus()
-		resp = append(resp, gin.H{
+		item := gin.H{
 			"id":      src.ID,
 			"name":    src.Name,
 			"enabled": src.Enabled,
@@ -261,7 +264,12 @@ func (h *AdminHandler) GetHealth(c *gin.Context) {
 			"latency": status.Latency.Milliseconds(),
 			"balance": status.Balance,
 			"error":   status.LastError,
-		})
+		}
+		// Include model_providers for CPA sources
+		if src.Type == model.SourceTypeCPA && status.ModelProviders != nil {
+			item["model_providers"] = status.ModelProviders
+		}
+		resp = append(resp, item)
 	}
 
 	c.JSON(200, gin.H{"data": resp})
@@ -346,6 +354,10 @@ func (h *AdminHandler) GetConfig(c *gin.Context) {
 // UpdateConfig 更新配置
 func (h *AdminHandler) UpdateConfig(c *gin.Context) {
 	var update struct {
+		Server *struct {
+			Host *string `json:"host"`
+			Port *int    `json:"port"`
+		} `json:"server"`
 		Routing     *config.RoutingConfig     `json:"routing"`
 		HealthCheck *config.HealthCheckConfig `json:"health_check"`
 		Logging     *config.LoggingConfig     `json:"logging"`
@@ -363,6 +375,44 @@ func (h *AdminHandler) UpdateConfig(c *gin.Context) {
 
 	h.cfgMu.Lock()
 	defer h.cfgMu.Unlock()
+
+	restartRequired := false
+
+	if update.Server != nil {
+		if update.Server.Host != nil {
+			host := strings.TrimSpace(*update.Server.Host)
+			if host == "" {
+				c.JSON(400, model.ErrorResponse{
+					Error: model.ErrorDetail{
+						Message: "server.host cannot be empty",
+						Type:    "invalid_request_error",
+					},
+				})
+				return
+			}
+			if host != h.cfg.Server.Host {
+				h.cfg.Server.Host = host
+				restartRequired = true
+			}
+		}
+
+		if update.Server.Port != nil {
+			port := *update.Server.Port
+			if port < 1024 || port > 65535 {
+				c.JSON(400, model.ErrorResponse{
+					Error: model.ErrorDetail{
+						Message: "server.port must be between 1024 and 65535",
+						Type:    "invalid_request_error",
+					},
+				})
+				return
+			}
+			if port != h.cfg.Server.Port {
+				h.cfg.Server.Port = port
+				restartRequired = true
+			}
+		}
+	}
 
 	if update.Routing != nil {
 		h.cfg.Routing = *update.Routing
@@ -390,5 +440,193 @@ func (h *AdminHandler) UpdateConfig(c *gin.Context) {
 		return
 	}
 
-	c.JSON(200, gin.H{"message": "Config updated"})
+	c.JSON(200, gin.H{
+		"message":          "Config updated",
+		"restart_required": restartRequired,
+	})
+}
+
+// === API Keys 管理 ===
+
+// ListKeys 列出所有 API Key
+func (h *AdminHandler) ListKeys(c *gin.Context) {
+	keys, err := h.store.ListAPIKeys()
+	if err != nil {
+		c.JSON(500, model.ErrorResponse{Error: model.ErrorDetail{Message: err.Error(), Type: "internal_error"}})
+		return
+	}
+	type KeyWithUsage struct {
+		*model.APIKey
+		DailyUsage int `json:"daily_usage"`
+	}
+	result := make([]KeyWithUsage, 0, len(keys))
+	for _, k := range keys {
+		usage, _ := h.store.GetKeyDailyUsage(k.ID)
+		result = append(result, KeyWithUsage{APIKey: k, DailyUsage: usage})
+	}
+	c.JSON(200, gin.H{"data": result})
+}
+
+// CreateKey 创建 API Key
+func (h *AdminHandler) CreateKey(c *gin.Context) {
+	var input struct {
+		Name         string          `json:"name"`
+		Limits       model.KeyLimits `json:"limits"`
+		AllowedTools []string        `json:"allowed_tools"`
+	}
+	if err := c.ShouldBindJSON(&input); err != nil {
+		c.JSON(400, model.ErrorResponse{Error: model.ErrorDetail{Message: "Invalid request: " + err.Error(), Type: "invalid_request_error"}})
+		return
+	}
+
+	key := &model.APIKey{
+		ID:           core.GenerateKeyID(),
+		Key:          core.GenerateAPIKey(),
+		Name:         input.Name,
+		Enabled:      true,
+		Limits:       input.Limits,
+		AllowedTools: input.AllowedTools,
+		CreatedAt:    time.Now(),
+		LastUsedAt:   time.Now(),
+	}
+
+	if err := h.store.SaveAPIKey(key); err != nil {
+		c.JSON(500, model.ErrorResponse{Error: model.ErrorDetail{Message: err.Error(), Type: "internal_error"}})
+		return
+	}
+	c.JSON(201, gin.H{"data": key})
+}
+
+// GetKey 获取 API Key 详情
+func (h *AdminHandler) GetKey(c *gin.Context) {
+	id := c.Param("id")
+	key, err := h.store.GetAPIKey(id)
+	if err != nil {
+		c.JSON(404, model.ErrorResponse{Error: model.ErrorDetail{Message: "Key not found", Type: "not_found_error"}})
+		return
+	}
+	usage, _ := h.store.GetKeyDailyUsage(id)
+	c.JSON(200, gin.H{"data": key, "daily_usage": usage})
+}
+
+// UpdateKey 更新 API Key
+func (h *AdminHandler) UpdateKey(c *gin.Context) {
+	id := c.Param("id")
+	existing, err := h.store.GetAPIKey(id)
+	if err != nil {
+		c.JSON(404, model.ErrorResponse{Error: model.ErrorDetail{Message: "Key not found", Type: "not_found_error"}})
+		return
+	}
+
+	var input struct {
+		Name         *string          `json:"name"`
+		Limits       *model.KeyLimits `json:"limits"`
+		AllowedTools *[]string        `json:"allowed_tools"`
+	}
+	if err := c.ShouldBindJSON(&input); err != nil {
+		c.JSON(400, model.ErrorResponse{Error: model.ErrorDetail{Message: "Invalid request: " + err.Error(), Type: "invalid_request_error"}})
+		return
+	}
+
+	if input.Name != nil {
+		existing.Name = *input.Name
+	}
+	if input.Limits != nil {
+		existing.Limits = *input.Limits
+	}
+	if input.AllowedTools != nil {
+		existing.AllowedTools = *input.AllowedTools
+	}
+
+	if err := h.store.SaveAPIKey(existing); err != nil {
+		c.JSON(500, model.ErrorResponse{Error: model.ErrorDetail{Message: err.Error(), Type: "internal_error"}})
+		return
+	}
+	c.JSON(200, gin.H{"data": existing})
+}
+
+// DeleteKey 删除 API Key
+func (h *AdminHandler) DeleteKey(c *gin.Context) {
+	id := c.Param("id")
+	if err := h.store.DeleteAPIKey(id); err != nil {
+		c.JSON(500, model.ErrorResponse{Error: model.ErrorDetail{Message: err.Error(), Type: "internal_error"}})
+		return
+	}
+	c.JSON(200, gin.H{"message": "Key deleted"})
+}
+
+// RotateKey 轮换 API Key
+func (h *AdminHandler) RotateKey(c *gin.Context) {
+	id := c.Param("id")
+	existing, err := h.store.GetAPIKey(id)
+	if err != nil {
+		c.JSON(404, model.ErrorResponse{Error: model.ErrorDetail{Message: "Key not found", Type: "not_found_error"}})
+		return
+	}
+	existing.Key = core.GenerateAPIKey()
+	if err := h.store.SaveAPIKey(existing); err != nil {
+		c.JSON(500, model.ErrorResponse{Error: model.ErrorDetail{Message: err.Error(), Type: "internal_error"}})
+		return
+	}
+	c.JSON(200, gin.H{"data": existing})
+}
+
+// BlockKey 禁用 API Key
+func (h *AdminHandler) BlockKey(c *gin.Context) {
+	id := c.Param("id")
+	existing, err := h.store.GetAPIKey(id)
+	if err != nil {
+		c.JSON(404, model.ErrorResponse{Error: model.ErrorDetail{Message: "Key not found", Type: "not_found_error"}})
+		return
+	}
+	existing.Enabled = false
+	if err := h.store.SaveAPIKey(existing); err != nil {
+		c.JSON(500, model.ErrorResponse{Error: model.ErrorDetail{Message: err.Error(), Type: "internal_error"}})
+		return
+	}
+	c.JSON(200, gin.H{"data": existing})
+}
+
+// UnblockKey 启用 API Key
+func (h *AdminHandler) UnblockKey(c *gin.Context) {
+	id := c.Param("id")
+	existing, err := h.store.GetAPIKey(id)
+	if err != nil {
+		c.JSON(404, model.ErrorResponse{Error: model.ErrorDetail{Message: "Key not found", Type: "not_found_error"}})
+		return
+	}
+	existing.Enabled = true
+	if err := h.store.SaveAPIKey(existing); err != nil {
+		c.JSON(500, model.ErrorResponse{Error: model.ErrorDetail{Message: err.Error(), Type: "internal_error"}})
+		return
+	}
+	c.JSON(200, gin.H{"data": existing})
+}
+
+// GetToolStats 获取工具使用统计
+func (h *AdminHandler) GetToolStats(c *gin.Context) {
+	stats, err := h.store.GetToolStats(7)
+	if err != nil {
+		c.JSON(500, model.ErrorResponse{Error: model.ErrorDetail{Message: err.Error(), Type: "internal_error"}})
+		return
+	}
+	c.JSON(200, gin.H{"data": stats})
+}
+
+// GetKeyUsage 获取 Key 使用趋势
+func (h *AdminHandler) GetKeyUsage(c *gin.Context) {
+	id := c.Param("id")
+	days := 7
+	if d := c.Query("days"); d != "" {
+		var n int
+		if _, err := fmt.Sscanf(d, "%d", &n); err == nil && n > 0 && n <= 90 {
+			days = n
+		}
+	}
+	usages, err := h.store.GetKeyUsageTrend(id, days)
+	if err != nil {
+		c.JSON(500, model.ErrorResponse{Error: model.ErrorDetail{Message: err.Error(), Type: "internal_error"}})
+		return
+	}
+	c.JSON(200, gin.H{"data": usages})
 }
