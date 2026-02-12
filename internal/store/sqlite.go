@@ -400,17 +400,31 @@ func (s *Store) GetAPIKeyByKey(key string) (*model.APIKey, error) {
 func (s *Store) scanAPIKey(row *sql.Row) (*model.APIKey, error) {
 	var ak model.APIKey
 	var limitsJSON, toolsJSON string
-	var createdStr, lastUsedStr string
-	err := row.Scan(&ak.ID, &ak.Key, &ak.Name, &ak.Enabled, &limitsJSON, &toolsJSON, &createdStr, &lastUsedStr)
+	var createdRaw, lastUsedRaw any
+	err := row.Scan(&ak.ID, &ak.Key, &ak.Name, &ak.Enabled, &limitsJSON, &toolsJSON, &createdRaw, &lastUsedRaw)
 	if err != nil {
 		return nil, err
 	}
 	json.Unmarshal([]byte(limitsJSON), &ak.Limits)
 	json.Unmarshal([]byte(toolsJSON), &ak.AllowedTools)
-	ak.CreatedAt = parseTimeStr(createdStr)
-	ak.LastUsedAt = parseTimeStr(lastUsedStr)
+	ak.CreatedAt = parseSQLiteTime(createdRaw)
+	ak.LastUsedAt = parseSQLiteTime(lastUsedRaw)
 	return &ak, nil
 }
+
+func parseSQLiteTime(v any) time.Time {
+	switch t := v.(type) {
+	case time.Time:
+		return t
+	case string:
+		return parseTimeStr(t)
+	case []byte:
+		return parseTimeStr(string(t))
+	default:
+		return time.Time{}
+	}
+}
+
 
 // parseTimeStr parses SQLite datetime strings into time.Time.
 func parseTimeStr(s string) time.Time {
@@ -444,14 +458,14 @@ func (s *Store) ListAPIKeys() ([]*model.APIKey, error) {
 	for rows.Next() {
 		var ak model.APIKey
 		var limitsJSON, toolsJSON string
-		var createdStr, lastUsedStr string
-		if err := rows.Scan(&ak.ID, &ak.Key, &ak.Name, &ak.Enabled, &limitsJSON, &toolsJSON, &createdStr, &lastUsedStr); err != nil {
+		var createdRaw, lastUsedRaw any
+		if err := rows.Scan(&ak.ID, &ak.Key, &ak.Name, &ak.Enabled, &limitsJSON, &toolsJSON, &createdRaw, &lastUsedRaw); err != nil {
 			return nil, err
 		}
 		json.Unmarshal([]byte(limitsJSON), &ak.Limits)
 		json.Unmarshal([]byte(toolsJSON), &ak.AllowedTools)
-		ak.CreatedAt = parseTimeStr(createdStr)
-		ak.LastUsedAt = parseTimeStr(lastUsedStr)
+		ak.CreatedAt = parseSQLiteTime(createdRaw)
+		ak.LastUsedAt = parseSQLiteTime(lastUsedRaw)
 		keys = append(keys, &ak)
 	}
 	return keys, nil
