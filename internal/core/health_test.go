@@ -164,3 +164,121 @@ func TestHealthChecker_UpdateConfig_RestartsWithoutDuplicateRuns(t *testing.T) {
 		t.Fatalf("too many requests; possible duplicate loops: before=%d after=%d", before, after)
 	}
 }
+
+func TestHealthChecker_CPAAutoDetect_SingleRequest(t *testing.T) {
+	var reqCount atomic.Int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		reqCount.Add(1)
+		w.Header().Set("Content-Type", "application/json")
+		fmt.Fprint(w, `{"data":[
+			{"id":"gemini-2.0-flash","provider":"gemini"},
+			{"id":"claude-3.5-sonnet","provider":"claude"}
+		]}`)
+	}))
+	defer srv.Close()
+
+	src := &model.Source{
+		ID: "cpa1", Name: "CPA", Type: model.SourceTypeCPA,
+		BaseURL: srv.URL, Enabled: true,
+		CPA: &model.CPAConfig{AutoDetect: true, Providers: []string{"gemini", "claude"}, AccountMode: "multi"},
+	}
+	src.SetStatus(&model.SourceStatus{State: model.HealthStateHealthy})
+
+	mgr := &SourceManager{sources: map[string]*model.Source{"cpa1": src}}
+	hc := NewHealthChecker(mgr, &config.HealthCheckConfig{Enabled: true, Interval: 60, Timeout: 2, FailureThreshold: 3})
+
+	hc.checkSource(src)
+
+	// Must be exactly 1 HTTP request (probe + detect combined)
+	if n := reqCount.Load(); n != 1 {
+		t.Fatalf("expected exactly 1 request for CPA autodetect, got %d", n)
+	}
+
+	// Status should be healthy
+	st := src.GetStatus()
+	if st.State != model.HealthStateHealthy {
+		t.Fatalf("expected healthy, got %s", st.State)
+	}
+
+	// Models should be detected
+	if len(src.Capabilities.Models) != 2 {
+		t.Fatalf("expected 2 detected models, got %d", len(src.Capabilities.Models))
+	}
+
+	// FC and Vision should be set from provider capabilities
+	if !src.Capabilities.FunctionCalling {
+		t.Fatal("expected FunctionCalling=true")
+	}
+	if !src.Capabilities.Vision {
+		t.Fatal("expected Vision=true")
+	}
+
+	// ModelProviders map should be populated
+	if st.ModelProviders == nil || len(st.ModelProviders) != 2 {
+		t.Fatalf("expected 2 model providers, got %v", st.ModelProviders)
+	}
+}
+
+func TestHealthChecker_NonCPA_SingleRequest(t *testing.T) {
+	var reqCount atomic.Int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		reqCount.Add(1)
+		w.Header().Set("Content-Type", "application/json")
+		fmt.Fprint(w, `{"data":[{"id":"gpt-4"}]}`)
+	}))
+	defer srv.Close()
+
+	src := &model.Source{
+		ID: "s1", Name: "OpenAI", Type: model.SourceTypeOpenAI,
+		BaseURL: srv.URL, APIKey: "sk-test", Enabled: true,
+	}
+	src.SetStatus(&model.SourceStatus{State: model.HealthStateHealthy})
+
+	mgr := &SourceManager{sources: map[string]*model.Source{"s1": src}}
+	hc := NewHealthChecker(mgr, &config.HealthCheckConfig{Enabled: true, Interval: 60, Timeout: 2, FailureThreshold: 3})
+
+	hc.checkSource(src)
+
+	if n := reqCount.Load(); n != 1 {
+		t.Fatalf("expected exactly 1 request for non-CPA probe, got %d", n)
+	}
+	if src.GetStatus().State != model.HealthStateHealthy {
+		t.Fatal("expected healthy")
+	}
+}
+
+func TestHealthChecker_RecoveryAfterFailure(t *testing.T) {
+	callNum := atomic.Int32{}
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		n := callNum.Add(1)
+		if n <= 2 {
+			w.WriteHeader(http.StatusInternalServerError)
+			fmt.Fprint(w, "down")
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		fmt.Fprint(w, `{"data":[]}`)
+	}))
+	defer srv.Close()
+
+	src := &model.Source{ID: "s1", Name: "S1", Type: model.SourceTypeOpenAI, BaseURL: srv.URL, APIKey: "k", Enabled: true}
+	src.SetStatus(&model.SourceStatus{State: model.HealthStateHealthy})
+
+	mgr := &SourceManager{sources: map[string]*model.Source{"s1": src}}
+	hc := NewHealthChecker(mgr, &config.HealthCheckConfig{Enabled: true, Interval: 60, Timeout: 2, FailureThreshold: 2})
+
+	hc.checkSource(src) // fail 1
+	hc.checkSource(src) // fail 2 -> unhealthy
+	if src.GetStatus().State != model.HealthStateUnhealthy {
+		t.Fatal("expected unhealthy")
+	}
+
+	hc.checkSource(src) // success -> should recover
+	st := src.GetStatus()
+	if st.State != model.HealthStateHealthy {
+		t.Fatalf("expected recovery to healthy, got %s", st.State)
+	}
+	if st.ConsecutiveFail != 0 {
+		t.Fatalf("expected ConsecutiveFail=0 after recovery, got %d", st.ConsecutiveFail)
+	}
+}

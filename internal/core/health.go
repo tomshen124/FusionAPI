@@ -129,18 +129,23 @@ func (h *HealthChecker) checkSource(src *model.Source) {
 		status = &model.SourceStatus{State: model.HealthStateHealthy}
 	}
 
-	// 调用 /v1/models 检查可用性
-	err := h.probeSource(src)
+	// Single probe: CPA+AutoDetect uses combined probe+detect, others use plain probe.
+	var probeErr error
+	if src.Type == model.SourceTypeCPA && src.CPA != nil && src.CPA.AutoDetect {
+		probeErr = h.probeAndDetectCPAModels(src, status)
+	} else {
+		probeErr = h.probeSource(src)
+	}
 	latency := time.Since(start)
 
 	status.LastCheck = time.Now()
 	status.Latency = latency
 
-	if err != nil {
+	if probeErr != nil {
 		status.ConsecutiveFail++
 		status.ErrorCount++
-		status.LastError = err.Error()
-		log.Printf("[HealthCheck] %s failed: %v (consecutive: %d)", src.Name, err, status.ConsecutiveFail)
+		status.LastError = probeErr.Error()
+		log.Printf("[HealthCheck] %s failed: %v (consecutive: %d)", src.Name, probeErr, status.ConsecutiveFail)
 
 		if status.ConsecutiveFail >= h.cfg.FailureThreshold {
 			status.State = model.HealthStateUnhealthy
@@ -149,11 +154,6 @@ func (h *HealthChecker) checkSource(src *model.Source) {
 		status.ConsecutiveFail = 0
 		status.State = model.HealthStateHealthy
 		status.LastError = ""
-	}
-
-	// CPA 自动探测
-	if src.Type == model.SourceTypeCPA && src.CPA != nil && src.CPA.AutoDetect {
-		h.detectCPAModels(src, status)
 	}
 
 	src.SetStatus(status)
@@ -201,25 +201,28 @@ func (h *HealthChecker) setAuthHeader(req *http.Request, src *model.Source) {
 	}
 }
 
-// detectCPAModels 探测 CPA 支持的模型和对应 provider
-func (h *HealthChecker) detectCPAModels(src *model.Source, status *model.SourceStatus) {
+// probeAndDetectCPAModels probes a CPA source and detects models in a single /v1/models call.
+// This replaces the old pattern of probeSource + detectCPAModels which made two requests.
+func (h *HealthChecker) probeAndDetectCPAModels(src *model.Source, status *model.SourceStatus) error {
 	url := src.BaseURL + "/v1/models"
 	req, err := http.NewRequestWithContext(h.ctx, "GET", url, nil)
 	if err != nil {
-		return
+		return err
 	}
 	h.setAuthHeader(req, src)
 
 	resp, err := h.client.Do(req)
 	if err != nil {
-		return
+		return err
 	}
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
-		return
+		body, _ := io.ReadAll(io.LimitReader(resp.Body, 1024))
+		return fmt.Errorf("status %d: %s", resp.StatusCode, string(body))
 	}
 
+	// Probe succeeded — now parse model list for auto-detection
 	var result struct {
 		Data []struct {
 			ID       string `json:"id"`
@@ -228,7 +231,10 @@ func (h *HealthChecker) detectCPAModels(src *model.Source, status *model.SourceS
 	}
 
 	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
-		return
+		// Source is reachable but response is unparseable — not a health failure,
+		// just skip model detection.
+		log.Printf("[CPA] %s: model list decode error: %v", src.Name, err)
+		return nil
 	}
 
 	modelProviders := make(model.CPAModelProviderMap)
@@ -251,12 +257,11 @@ func (h *HealthChecker) detectCPAModels(src *model.Source, status *model.SourceS
 
 	status.ModelProviders = modelProviders
 
-	// 更新源的模型列表
 	if len(detectedModels) > 0 {
 		src.Capabilities.Models = detectedModels
 	}
 
-	// 根据探测到的 provider 动态更新能力声明（Thinking 始终不支持）
+	// Update capability flags based on detected providers (Thinking always off for CPA)
 	src.Capabilities.ExtendedThinking = false
 	if len(detectedProviderSet) > 0 {
 		hasFC := false
@@ -279,6 +284,8 @@ func (h *HealthChecker) detectCPAModels(src *model.Source, status *model.SourceS
 		log.Printf("[CPA] %s: detected %d models from %d providers",
 			src.Name, len(detectedModels), countUniqueProviders(modelProviders))
 	}
+
+	return nil
 }
 
 // countUniqueProviders 统计唯一 provider 数
