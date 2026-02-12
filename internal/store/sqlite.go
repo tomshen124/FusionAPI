@@ -6,9 +6,10 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"time"
 
-	"github.com/xiaopang/fusionapi/internal/model"
 	_ "github.com/mattn/go-sqlite3"
+	"github.com/xiaopang/fusionapi/internal/model"
 )
 
 // Store 数据存储
@@ -393,13 +394,33 @@ func (s *Store) GetAPIKeyByKey(key string) (*model.APIKey, error) {
 func (s *Store) scanAPIKey(row *sql.Row) (*model.APIKey, error) {
 	var ak model.APIKey
 	var limitsJSON, toolsJSON string
-	err := row.Scan(&ak.ID, &ak.Key, &ak.Name, &ak.Enabled, &limitsJSON, &toolsJSON, &ak.CreatedAt, &ak.LastUsedAt)
+	var createdStr, lastUsedStr string
+	err := row.Scan(&ak.ID, &ak.Key, &ak.Name, &ak.Enabled, &limitsJSON, &toolsJSON, &createdStr, &lastUsedStr)
 	if err != nil {
 		return nil, err
 	}
 	json.Unmarshal([]byte(limitsJSON), &ak.Limits)
 	json.Unmarshal([]byte(toolsJSON), &ak.AllowedTools)
+	ak.CreatedAt = parseTimeStr(createdStr)
+	ak.LastUsedAt = parseTimeStr(lastUsedStr)
 	return &ak, nil
+}
+
+// parseTimeStr parses SQLite datetime strings into time.Time.
+func parseTimeStr(s string) time.Time {
+	for _, layout := range []string{
+		time.RFC3339Nano,
+		time.RFC3339,
+		"2006-01-02T15:04:05Z07:00",
+		"2006-01-02 15:04:05",
+		"2006-01-02T15:04:05",
+		"2006-01-02",
+	} {
+		if t, err := time.Parse(layout, s); err == nil {
+			return t
+		}
+	}
+	return time.Time{}
 }
 
 // ListAPIKeys 列出所有 API Key
@@ -417,11 +438,14 @@ func (s *Store) ListAPIKeys() ([]*model.APIKey, error) {
 	for rows.Next() {
 		var ak model.APIKey
 		var limitsJSON, toolsJSON string
-		if err := rows.Scan(&ak.ID, &ak.Key, &ak.Name, &ak.Enabled, &limitsJSON, &toolsJSON, &ak.CreatedAt, &ak.LastUsedAt); err != nil {
+		var createdStr, lastUsedStr string
+		if err := rows.Scan(&ak.ID, &ak.Key, &ak.Name, &ak.Enabled, &limitsJSON, &toolsJSON, &createdStr, &lastUsedStr); err != nil {
 			return nil, err
 		}
 		json.Unmarshal([]byte(limitsJSON), &ak.Limits)
 		json.Unmarshal([]byte(toolsJSON), &ak.AllowedTools)
+		ak.CreatedAt = parseTimeStr(createdStr)
+		ak.LastUsedAt = parseTimeStr(lastUsedStr)
 		keys = append(keys, &ak)
 	}
 	return keys, nil
