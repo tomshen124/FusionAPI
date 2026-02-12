@@ -77,12 +77,12 @@ func (h *ProxyHandler) sendChatRequest(c *gin.Context, req *model.ChatCompletion
 	}
 	defer resp.Body.Close()
 
-	respBody, err := io.ReadAll(resp.Body)
+	respBody, err := io.ReadAll(io.LimitReader(resp.Body, 512*1024))
 	if err != nil {
 		return nil, err
 	}
 	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("status %d: %s", resp.StatusCode, strings.TrimSpace(string(respBody)))
+		return nil, fmt.Errorf("status %d: %s", resp.StatusCode, truncateBody(respBody, 4096))
 	}
 
 	var chatResp model.ChatCompletionResponse
