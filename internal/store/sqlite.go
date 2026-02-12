@@ -6,9 +6,10 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"time"
 
-	"github.com/xiaopang/fusionapi/internal/model"
 	_ "github.com/mattn/go-sqlite3"
+	"github.com/xiaopang/fusionapi/internal/model"
 )
 
 // Store 数据存储
@@ -57,6 +58,7 @@ func (s *Store) migrate() error {
 
 	CREATE TABLE IF NOT EXISTS request_logs (
 		id TEXT PRIMARY KEY,
+		request_id TEXT,
 		timestamp DATETIME NOT NULL,
 		source_id TEXT,
 		source_name TEXT,
@@ -99,6 +101,7 @@ func (s *Store) migrate() error {
 	)`)
 
 	// request_logs 增量迁移
+	s.db.Exec("ALTER TABLE request_logs ADD COLUMN request_id TEXT")
 	s.db.Exec("ALTER TABLE request_logs ADD COLUMN client_ip TEXT DEFAULT ''")
 	s.db.Exec("ALTER TABLE request_logs ADD COLUMN client_tool TEXT DEFAULT ''")
 	s.db.Exec("ALTER TABLE request_logs ADD COLUMN api_key_id TEXT DEFAULT ''")
@@ -202,12 +205,12 @@ func (s *Store) DeleteSource(id string) error {
 // SaveLog 保存请求日志
 func (s *Store) SaveLog(log *model.RequestLog) error {
 	_, err := s.db.Exec(`
-		INSERT INTO request_logs (id, timestamp, source_id, source_name, model,
+		INSERT INTO request_logs (id, request_id, timestamp, source_id, source_name, model,
 			has_tools, has_thinking, stream, success, status_code, latency_ms,
 			prompt_tokens, completion_tokens, total_tokens, error, failover_from,
 			client_ip, client_tool, api_key_id, fc_compat_used)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-	`, log.ID, log.Timestamp, log.SourceID, log.SourceName, log.Model,
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+	`, log.ID, log.RequestID, log.Timestamp, log.SourceID, log.SourceName, log.Model,
 		log.HasTools, log.HasThinking, log.Stream, log.Success, log.StatusCode, log.LatencyMs,
 		log.PromptTokens, log.CompletionTokens, log.TotalTokens, log.Error, log.FailoverFrom,
 		log.ClientIP, log.ClientTool, log.APIKeyID, log.FCCompatUsed)
@@ -216,7 +219,7 @@ func (s *Store) SaveLog(log *model.RequestLog) error {
 
 // QueryLogs 查询日志
 func (s *Store) QueryLogs(query *model.LogQuery) ([]*model.RequestLog, error) {
-	sql := "SELECT id, timestamp, source_id, source_name, model, has_tools, has_thinking, stream, success, status_code, latency_ms, prompt_tokens, completion_tokens, total_tokens, error, failover_from, COALESCE(client_ip, ''), COALESCE(client_tool, ''), COALESCE(api_key_id, ''), COALESCE(fc_compat_used, 0) FROM request_logs WHERE 1=1"
+	sql := "SELECT id, COALESCE(request_id, ''), timestamp, source_id, source_name, model, has_tools, has_thinking, stream, success, status_code, latency_ms, prompt_tokens, completion_tokens, total_tokens, error, failover_from, COALESCE(client_ip, ''), COALESCE(client_tool, ''), COALESCE(api_key_id, ''), COALESCE(fc_compat_used, 0) FROM request_logs WHERE 1=1"
 	args := []any{}
 
 	if query.SourceID != "" {
@@ -247,6 +250,10 @@ func (s *Store) QueryLogs(query *model.LogQuery) ([]*model.RequestLog, error) {
 		sql += " AND api_key_id = ?"
 		args = append(args, query.APIKeyID)
 	}
+	if query.FCCompat != nil {
+		sql += " AND fc_compat_used = ?"
+		args = append(args, *query.FCCompat)
+	}
 
 	sql += " ORDER BY timestamp DESC"
 
@@ -268,7 +275,7 @@ func (s *Store) QueryLogs(query *model.LogQuery) ([]*model.RequestLog, error) {
 	var logs []*model.RequestLog
 	for rows.Next() {
 		var log model.RequestLog
-		if err := rows.Scan(&log.ID, &log.Timestamp, &log.SourceID, &log.SourceName, &log.Model,
+		if err := rows.Scan(&log.ID, &log.RequestID, &log.Timestamp, &log.SourceID, &log.SourceName, &log.Model,
 			&log.HasTools, &log.HasThinking, &log.Stream, &log.Success, &log.StatusCode, &log.LatencyMs,
 			&log.PromptTokens, &log.CompletionTokens, &log.TotalTokens, &log.Error, &log.FailoverFrom,
 			&log.ClientIP, &log.ClientTool, &log.APIKeyID, &log.FCCompatUsed); err != nil {
@@ -393,13 +400,47 @@ func (s *Store) GetAPIKeyByKey(key string) (*model.APIKey, error) {
 func (s *Store) scanAPIKey(row *sql.Row) (*model.APIKey, error) {
 	var ak model.APIKey
 	var limitsJSON, toolsJSON string
-	err := row.Scan(&ak.ID, &ak.Key, &ak.Name, &ak.Enabled, &limitsJSON, &toolsJSON, &ak.CreatedAt, &ak.LastUsedAt)
+	var createdRaw, lastUsedRaw any
+	err := row.Scan(&ak.ID, &ak.Key, &ak.Name, &ak.Enabled, &limitsJSON, &toolsJSON, &createdRaw, &lastUsedRaw)
 	if err != nil {
 		return nil, err
 	}
 	json.Unmarshal([]byte(limitsJSON), &ak.Limits)
 	json.Unmarshal([]byte(toolsJSON), &ak.AllowedTools)
+	ak.CreatedAt = parseSQLiteTime(createdRaw)
+	ak.LastUsedAt = parseSQLiteTime(lastUsedRaw)
 	return &ak, nil
+}
+
+func parseSQLiteTime(v any) time.Time {
+	switch t := v.(type) {
+	case time.Time:
+		return t
+	case string:
+		return parseTimeStr(t)
+	case []byte:
+		return parseTimeStr(string(t))
+	default:
+		return time.Time{}
+	}
+}
+
+
+// parseTimeStr parses SQLite datetime strings into time.Time.
+func parseTimeStr(s string) time.Time {
+	for _, layout := range []string{
+		time.RFC3339Nano,
+		time.RFC3339,
+		"2006-01-02T15:04:05Z07:00",
+		"2006-01-02 15:04:05",
+		"2006-01-02T15:04:05",
+		"2006-01-02",
+	} {
+		if t, err := time.Parse(layout, s); err == nil {
+			return t
+		}
+	}
+	return time.Time{}
 }
 
 // ListAPIKeys 列出所有 API Key
@@ -417,11 +458,14 @@ func (s *Store) ListAPIKeys() ([]*model.APIKey, error) {
 	for rows.Next() {
 		var ak model.APIKey
 		var limitsJSON, toolsJSON string
-		if err := rows.Scan(&ak.ID, &ak.Key, &ak.Name, &ak.Enabled, &limitsJSON, &toolsJSON, &ak.CreatedAt, &ak.LastUsedAt); err != nil {
+		var createdRaw, lastUsedRaw any
+		if err := rows.Scan(&ak.ID, &ak.Key, &ak.Name, &ak.Enabled, &limitsJSON, &toolsJSON, &createdRaw, &lastUsedRaw); err != nil {
 			return nil, err
 		}
 		json.Unmarshal([]byte(limitsJSON), &ak.Limits)
 		json.Unmarshal([]byte(toolsJSON), &ak.AllowedTools)
+		ak.CreatedAt = parseSQLiteTime(createdRaw)
+		ak.LastUsedAt = parseSQLiteTime(lastUsedRaw)
 		keys = append(keys, &ak)
 	}
 	return keys, nil

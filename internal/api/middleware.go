@@ -1,8 +1,9 @@
 package api
 
 import (
+	"crypto/rand"
+	"encoding/hex"
 	"fmt"
-	"log"
 	"os"
 	"path/filepath"
 	"strings"
@@ -11,9 +12,27 @@ import (
 	"github.com/gin-gonic/gin"
 	"github.com/xiaopang/fusionapi/internal/config"
 	"github.com/xiaopang/fusionapi/internal/core"
+	"github.com/xiaopang/fusionapi/internal/logger"
 	"github.com/xiaopang/fusionapi/internal/model"
 	"github.com/xiaopang/fusionapi/internal/store"
 )
+
+const RequestIDKey = "request_id"
+
+// RequestIDMiddleware injects a unique request ID into the context and response header.
+func RequestIDMiddleware() gin.HandlerFunc {
+	return func(c *gin.Context) {
+		id := c.GetHeader("X-Request-ID")
+		if id == "" {
+			b := make([]byte, 8)
+			rand.Read(b)
+			id = "req_" + hex.EncodeToString(b)
+		}
+		c.Set(RequestIDKey, id)
+		c.Header("X-Request-ID", id)
+		c.Next()
+	}
+}
 
 // AuthMiddleware API Key 认证中间件
 // Now supports multi-key: checks api_keys table first, then fallback to server.api_key
@@ -239,9 +258,15 @@ func LoggerMiddleware() gin.HandlerFunc {
 		latency := time.Since(start)
 		status := c.Writer.Status()
 		method := c.Request.Method
+		reqID, _ := c.Get(RequestIDKey)
 
-		log.Printf("[HTTP] %3d | %12v | %-7s %s",
-			status, latency, method, path)
+		logger.Info("http_request",
+			"status", status,
+			"latency", latency,
+			"method", method,
+			"path", path,
+			"request_id", reqID,
+		)
 	}
 }
 
@@ -251,6 +276,7 @@ func SetupRouter(cfg *config.Config, proxy *ProxyHandler, admin *AdminHandler, s
 
 	r := gin.New()
 	r.Use(RecoveryMiddleware())
+	r.Use(RequestIDMiddleware())
 	r.Use(LoggerMiddleware())
 	r.Use(CORSMiddleware())
 

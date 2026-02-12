@@ -5,6 +5,7 @@ import "time"
 // RequestLog 请求日志
 type RequestLog struct {
 	ID        string    `json:"id"`
+	RequestID string    `json:"request_id,omitempty"`
 	Timestamp time.Time `json:"timestamp"`
 	SourceID  string    `json:"source_id"`
 	SourceName string   `json:"source_name"`
@@ -84,4 +85,5 @@ type LogQuery struct {
 	Offset     int       `form:"offset"`
 	ClientTool string    `form:"client_tool"`
 	APIKeyID   string    `form:"api_key_id"`
+	FCCompat   *bool     `form:"fc_compat"`
 }
