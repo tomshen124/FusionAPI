@@ -7,10 +7,12 @@ import (
 	"os"
 	"os/signal"
 	"syscall"
+	"time"
 
 	"github.com/xiaopang/fusionapi/internal/api"
 	"github.com/xiaopang/fusionapi/internal/config"
 	"github.com/xiaopang/fusionapi/internal/core"
+	"github.com/xiaopang/fusionapi/internal/logger"
 	"github.com/xiaopang/fusionapi/internal/store"
 )
 
@@ -26,6 +28,10 @@ func main() {
 	}
 	log.Printf("Config loaded from %s", *configPath)
 
+	// Apply logging level
+	logger.SetLevel(logger.ParseLevel(cfg.Logging.Level))
+	logger.Info("logging configured", "level", cfg.Logging.Level)
+
 	// 初始化存储
 	db, err := store.New(cfg.Database.Path)
 	if err != nil {
@@ -33,6 +39,27 @@ func main() {
 	}
 	defer db.Close()
 	log.Printf("Database initialized at %s", cfg.Database.Path)
+
+	// Initialize log retention cleanup
+	if cfg.Logging.RetentionDays > 0 {
+		if deleted, err := db.CleanOldLogs(cfg.Logging.RetentionDays); err != nil {
+			logger.Warn("log retention cleanup failed", "err", err, "retention_days", cfg.Logging.RetentionDays)
+		} else if deleted > 0 {
+			logger.Info("log retention cleanup", "deleted", deleted, "retention_days", cfg.Logging.RetentionDays)
+		}
+
+		go func() {
+			ticker := time.NewTicker(24 * time.Hour)
+			defer ticker.Stop()
+			for range ticker.C {
+				if deleted, err := db.CleanOldLogs(cfg.Logging.RetentionDays); err != nil {
+					logger.Warn("log retention cleanup failed", "err", err, "retention_days", cfg.Logging.RetentionDays)
+				} else if deleted > 0 {
+					logger.Info("log retention cleanup", "deleted", deleted, "retention_days", cfg.Logging.RetentionDays)
+				}
+			}
+		}()
+	}
 
 	// 初始化源管理器
 	manager := core.NewSourceManager(db)
