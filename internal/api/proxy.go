@@ -120,7 +120,7 @@ func (h *ProxyHandler) ChatCompletions(c *gin.Context) {
 	}
 
 	// 所有尝试都失败
-	h.logRequest(&req, nil, nil, startTime, 500, lastError, failoverFrom, clientInfo, false)
+	h.logRequest(requestIDFromContext(c), &req, nil, nil, startTime, 500, lastError, failoverFrom, clientInfo, false)
 	c.JSON(500, model.ErrorResponse{
 		Error: model.ErrorDetail{
 			Message: "All sources failed: " + lastError.Error(),
@@ -171,7 +171,7 @@ func (h *ProxyHandler) handleNormalRequest(c *gin.Context, req *model.ChatComple
 	h.updateSourceLatency(src, time.Since(startTime), nil)
 
 	// 记录日志
-	h.logRequest(req, &chatResp, src, startTime, resp.StatusCode, nil, failoverFrom, clientInfo, false)
+	h.logRequest(requestIDFromContext(c), req, &chatResp, src, startTime, resp.StatusCode, nil, failoverFrom, clientInfo, false)
 
 	// 返回响应
 	c.JSON(resp.StatusCode, chatResp)
@@ -253,7 +253,7 @@ func (h *ProxyHandler) handleStreamRequest(c *gin.Context, req *model.ChatComple
 	h.updateSourceLatency(src, time.Since(startTime), nil)
 
 	// 记录日志（流式请求无法获取完整 token 统计）
-	h.logStreamRequest(req, src, startTime, totalTokens, failoverFrom, clientInfo, false)
+	h.logStreamRequest(requestIDFromContext(c), req, src, startTime, totalTokens, failoverFrom, clientInfo, false)
 
 	return true
 }
@@ -296,10 +296,24 @@ func (h *ProxyHandler) updateSourceLatency(src *model.Source, latency time.Durat
 	src.SetStatus(status)
 }
 
+// requestIDFromContext gets request id from gin context (if present).
+func requestIDFromContext(c *gin.Context) string {
+	if c == nil {
+		return ""
+	}
+	if v, ok := c.Get(RequestIDKey); ok {
+		if s, ok := v.(string); ok {
+			return s
+		}
+	}
+	return ""
+}
+
 // logRequest 记录请求日志
-func (h *ProxyHandler) logRequest(req *model.ChatCompletionRequest, resp *model.ChatCompletionResponse, src *model.Source, startTime time.Time, statusCode int, err error, failoverFrom string, clientInfo *model.ClientInfo, fcCompatUsed bool) {
+func (h *ProxyHandler) logRequest(requestID string, req *model.ChatCompletionRequest, resp *model.ChatCompletionResponse, src *model.Source, startTime time.Time, statusCode int, err error, failoverFrom string, clientInfo *model.ClientInfo, fcCompatUsed bool) {
 	log := &model.RequestLog{
 		ID:           core.GenerateLogID(),
+		RequestID:    requestID,
 		Timestamp:    startTime,
 		Model:        req.Model,
 		HasTools:     req.HasTools(),
@@ -347,9 +361,10 @@ func (h *ProxyHandler) logRequest(req *model.ChatCompletionRequest, resp *model.
 }
 
 // logStreamRequest 记录流式请求日志
-func (h *ProxyHandler) logStreamRequest(req *model.ChatCompletionRequest, src *model.Source, startTime time.Time, totalTokens int, failoverFrom string, clientInfo *model.ClientInfo, fcCompatUsed bool) {
+func (h *ProxyHandler) logStreamRequest(requestID string, req *model.ChatCompletionRequest, src *model.Source, startTime time.Time, totalTokens int, failoverFrom string, clientInfo *model.ClientInfo, fcCompatUsed bool) {
 	log := &model.RequestLog{
 		ID:           core.GenerateLogID(),
+		RequestID:    requestID,
 		Timestamp:    startTime,
 		SourceID:     src.ID,
 		SourceName:   src.Name,

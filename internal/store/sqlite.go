@@ -58,6 +58,7 @@ func (s *Store) migrate() error {
 
 	CREATE TABLE IF NOT EXISTS request_logs (
 		id TEXT PRIMARY KEY,
+		request_id TEXT,
 		timestamp DATETIME NOT NULL,
 		source_id TEXT,
 		source_name TEXT,
@@ -100,6 +101,7 @@ func (s *Store) migrate() error {
 	)`)
 
 	// request_logs 增量迁移
+	s.db.Exec("ALTER TABLE request_logs ADD COLUMN request_id TEXT")
 	s.db.Exec("ALTER TABLE request_logs ADD COLUMN client_ip TEXT DEFAULT ''")
 	s.db.Exec("ALTER TABLE request_logs ADD COLUMN client_tool TEXT DEFAULT ''")
 	s.db.Exec("ALTER TABLE request_logs ADD COLUMN api_key_id TEXT DEFAULT ''")
@@ -203,12 +205,12 @@ func (s *Store) DeleteSource(id string) error {
 // SaveLog 保存请求日志
 func (s *Store) SaveLog(log *model.RequestLog) error {
 	_, err := s.db.Exec(`
-		INSERT INTO request_logs (id, timestamp, source_id, source_name, model,
+		INSERT INTO request_logs (id, request_id, timestamp, source_id, source_name, model,
 			has_tools, has_thinking, stream, success, status_code, latency_ms,
 			prompt_tokens, completion_tokens, total_tokens, error, failover_from,
 			client_ip, client_tool, api_key_id, fc_compat_used)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-	`, log.ID, log.Timestamp, log.SourceID, log.SourceName, log.Model,
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+	`, log.ID, log.RequestID, log.Timestamp, log.SourceID, log.SourceName, log.Model,
 		log.HasTools, log.HasThinking, log.Stream, log.Success, log.StatusCode, log.LatencyMs,
 		log.PromptTokens, log.CompletionTokens, log.TotalTokens, log.Error, log.FailoverFrom,
 		log.ClientIP, log.ClientTool, log.APIKeyID, log.FCCompatUsed)
@@ -217,7 +219,7 @@ func (s *Store) SaveLog(log *model.RequestLog) error {
 
 // QueryLogs 查询日志
 func (s *Store) QueryLogs(query *model.LogQuery) ([]*model.RequestLog, error) {
-	sql := "SELECT id, timestamp, source_id, source_name, model, has_tools, has_thinking, stream, success, status_code, latency_ms, prompt_tokens, completion_tokens, total_tokens, error, failover_from, COALESCE(client_ip, ''), COALESCE(client_tool, ''), COALESCE(api_key_id, ''), COALESCE(fc_compat_used, 0) FROM request_logs WHERE 1=1"
+	sql := "SELECT id, COALESCE(request_id, ''), timestamp, source_id, source_name, model, has_tools, has_thinking, stream, success, status_code, latency_ms, prompt_tokens, completion_tokens, total_tokens, error, failover_from, COALESCE(client_ip, ''), COALESCE(client_tool, ''), COALESCE(api_key_id, ''), COALESCE(fc_compat_used, 0) FROM request_logs WHERE 1=1"
 	args := []any{}
 
 	if query.SourceID != "" {
@@ -273,7 +275,7 @@ func (s *Store) QueryLogs(query *model.LogQuery) ([]*model.RequestLog, error) {
 	var logs []*model.RequestLog
 	for rows.Next() {
 		var log model.RequestLog
-		if err := rows.Scan(&log.ID, &log.Timestamp, &log.SourceID, &log.SourceName, &log.Model,
+		if err := rows.Scan(&log.ID, &log.RequestID, &log.Timestamp, &log.SourceID, &log.SourceName, &log.Model,
 			&log.HasTools, &log.HasThinking, &log.Stream, &log.Success, &log.StatusCode, &log.LatencyMs,
 			&log.PromptTokens, &log.CompletionTokens, &log.TotalTokens, &log.Error, &log.FailoverFrom,
 			&log.ClientIP, &log.ClientTool, &log.APIKeyID, &log.FCCompatUsed); err != nil {

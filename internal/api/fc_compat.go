@@ -48,7 +48,7 @@ func (h *ProxyHandler) handleFCCompatRequest(c *gin.Context, originalReq, transl
 	compatResp := buildCompatResponse(upstreamResp)
 
 	h.updateSourceLatency(src, time.Since(startTime), nil)
-	h.logRequest(originalReq, compatResp, src, startTime, http.StatusOK, nil, failoverFrom, clientInfo, true)
+	h.logRequest(requestIDFromContext(c), originalReq, compatResp, src, startTime, http.StatusOK, nil, failoverFrom, clientInfo, true)
 
 	if originalReq.Stream {
 		writeCompatStreamResponse(c, compatResp)
