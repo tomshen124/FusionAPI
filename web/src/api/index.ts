@@ -208,6 +208,8 @@ export const logsApi = {
     source_id?: string
     model?: string
     success?: boolean
+    client_tool?: string
+    fc_compat?: boolean
     limit?: number
     offset?: number
   }) => {
