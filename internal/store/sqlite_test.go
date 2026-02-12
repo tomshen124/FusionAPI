@@ -380,6 +380,23 @@ func TestQueryLogs_Pagination(t *testing.T) {
 	}
 }
 
+func TestQueryLogs_FilterByFCCompat(t *testing.T) {
+	s, cleanup := tempDB(t)
+	defer cleanup()
+
+	s.SaveLog(&model.RequestLog{ID: "l1", Timestamp: time.Now(), Model: "gpt-4", FCCompatUsed: true})
+	s.SaveLog(&model.RequestLog{ID: "l2", Timestamp: time.Now(), Model: "gpt-4", FCCompatUsed: false})
+
+	fc := true
+	logs, _ := s.QueryLogs(&model.LogQuery{FCCompat: &fc})
+	if len(logs) != 1 {
+		t.Errorf("expected 1 log for fc_compat=true, got %d", len(logs))
+	}
+	if len(logs) == 1 && !logs[0].FCCompatUsed {
+		t.Errorf("expected FCCompatUsed=true")
+	}
+}
+
 // === CleanOldLogs ===
 
 func TestCleanOldLogs(t *testing.T) {

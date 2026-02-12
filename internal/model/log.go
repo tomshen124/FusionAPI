@@ -84,4 +84,5 @@ type LogQuery struct {
 	Offset     int       `form:"offset"`
 	ClientTool string    `form:"client_tool"`
 	APIKeyID   string    `form:"api_key_id"`
+	FCCompat   *bool     `form:"fc_compat"`
 }

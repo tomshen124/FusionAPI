@@ -248,6 +248,10 @@ func (s *Store) QueryLogs(query *model.LogQuery) ([]*model.RequestLog, error) {
 		sql += " AND api_key_id = ?"
 		args = append(args, query.APIKeyID)
 	}
+	if query.FCCompat != nil {
+		sql += " AND fc_compat_used = ?"
+		args = append(args, *query.FCCompat)
+	}
 
 	sql += " ORDER BY timestamp DESC"
 
