@@ -21,7 +21,7 @@ type AdminHandler struct {
 	store      *store.Store
 	cfg        *config.Config
 	configPath string
-	cfgMu      sync.Mutex
+	cfgMu      sync.RWMutex
 }
 
 // NewAdminHandler 创建管理处理器
@@ -239,13 +239,18 @@ func (h *AdminHandler) GetStatus(c *gin.Context) {
 		}
 	}
 
+	h.cfgMu.RLock()
+	routingStrategy := h.cfg.Routing.Strategy
+	failoverEnabled := h.cfg.Routing.Failover.Enabled
+	h.cfgMu.RUnlock()
+
 	c.JSON(200, gin.H{
 		"total_sources":     len(sources),
 		"healthy_sources":   healthy,
 		"unhealthy_sources": unhealthy,
 		"disabled_sources":  disabled,
-		"routing_strategy":  h.cfg.Routing.Strategy,
-		"failover_enabled":  h.cfg.Routing.Failover.Enabled,
+		"routing_strategy":  routingStrategy,
+		"failover_enabled":  failoverEnabled,
 	})
 }
 
@@ -340,6 +345,9 @@ func (h *AdminHandler) GetStats(c *gin.Context) {
 
 // GetConfig 获取配置
 func (h *AdminHandler) GetConfig(c *gin.Context) {
+	h.cfgMu.RLock()
+	defer h.cfgMu.RUnlock()
+
 	c.JSON(200, gin.H{
 		"server": gin.H{
 			"host": h.cfg.Server.Host,

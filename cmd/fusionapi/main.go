@@ -1,12 +1,15 @@
 package main
 
 import (
+	"context"
+	"errors"
 	"flag"
 	"fmt"
 	"log"
-	"os"
+	"net/http"
 	"os/signal"
 	"syscall"
+	"time"
 
 	"github.com/xiaopang/fusionapi/internal/api"
 	"github.com/xiaopang/fusionapi/internal/config"
@@ -75,20 +78,45 @@ func main() {
 	// 设置路由
 	r := api.SetupRouter(cfg, proxyHandler, adminHandler, db, rateLimiter)
 
-	// 启动服务器
+	// 使用 http.Server 以支持 Graceful Shutdown
 	addr := fmt.Sprintf("%s:%d", cfg.Server.Host, cfg.Server.Port)
-	log.Printf("FusionAPI starting on %s", addr)
+	srv := &http.Server{
+		Addr:    addr,
+		Handler: r,
+	}
 
-	// 优雅关闭
+	// 创建一个 context，监听 SIGINT / SIGTERM
+	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
+	defer stop()
+
+	// 在 goroutine 中启动 HTTP server
+	srvErr := make(chan error, 1)
 	go func() {
-		sigCh := make(chan os.Signal, 1)
-		signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
-		<-sigCh
-		log.Println("Shutting down...")
-		os.Exit(0)
+		log.Printf("FusionAPI starting on %s", addr)
+		if err := srv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
+			srvErr <- err
+		}
+		close(srvErr)
 	}()
 
-	if err := r.Run(addr); err != nil {
-		log.Fatalf("Failed to start server: %v", err)
+	// 等待信号或服务器错误
+	select {
+	case err := <-srvErr:
+		if err != nil {
+			log.Fatalf("Failed to start server: %v", err)
+		}
+	case <-ctx.Done():
+		log.Println("Shutdown signal received, draining connections...")
 	}
+
+	// 给在途请求 15 秒的时间完成
+	shutdownCtx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+
+	if err := srv.Shutdown(shutdownCtx); err != nil {
+		log.Printf("HTTP server shutdown error: %v", err)
+	}
+
+	// 到这里 deferred db.Close() 和 healthChecker.Stop() 会正常执行
+	log.Println("Server stopped gracefully")
 }
