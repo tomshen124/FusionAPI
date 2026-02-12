@@ -63,11 +63,8 @@ func (h *ProxyHandler) ChatCompletions(c *gin.Context) {
 		clientInfo = ci.(*model.ClientInfo)
 	}
 
-	// Concurrent tracking
-	if clientInfo != nil && clientInfo.KeyID != "" && h.rateLimiter != nil {
-		h.rateLimiter.AcquireConcurrent(clientInfo.KeyID)
-		defer h.rateLimiter.ReleaseConcurrent(clientInfo.KeyID)
-	}
+	// NOTE: Concurrent tracking is now handled atomically by Enter() in
+	// AuthMiddleware. No AcquireConcurrent/ReleaseConcurrent needed here.
 
 	// 记录开始时间
 	startTime := time.Now()

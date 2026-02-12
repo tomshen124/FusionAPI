@@ -5,7 +5,7 @@ import (
 	"encoding/hex"
 	"os"
 	"strings"
-	"sync"
+	"sync/atomic"
 
 	"github.com/xiaopang/fusionapi/internal/model"
 	"gopkg.in/yaml.v3"
@@ -60,10 +60,7 @@ type LoggingConfig struct {
 	RetentionDays int    `yaml:"retention_days"`
 }
 
-var (
-	globalConfig *Config
-	configMu     sync.RWMutex
-)
+var globalConfig atomic.Value // stores *Config
 
 // Load 从文件加载配置
 func Load(path string) (*Config, error) {
@@ -87,9 +84,7 @@ func Load(path string) (*Config, error) {
 		}
 	}
 
-	configMu.Lock()
-	globalConfig = cfg
-	configMu.Unlock()
+	globalConfig.Store(cfg)
 
 	return cfg, nil
 }
@@ -119,9 +114,15 @@ func generateAPIKey(prefix string) string {
 
 // Get 获取全局配置
 func Get() *Config {
-	configMu.RLock()
-	defer configMu.RUnlock()
-	return globalConfig
+	if v := globalConfig.Load(); v != nil {
+		return v.(*Config)
+	}
+	return nil
+}
+
+// Set 设置全局配置（线程安全）
+func Set(cfg *Config) {
+	globalConfig.Store(cfg)
 }
 
 // setDefaults 设置默认值

@@ -90,7 +90,7 @@ func AuthMiddleware(apiKey string, st *store.Store, rateLimiter *core.RateLimite
 					}
 				}
 
-				// Check rate limits
+				// Check rate limits + acquire concurrent token atomically via Enter()
 				if rateLimiter != nil {
 					// Check auto-ban first
 					if banned, remaining := rateLimiter.IsAutoBanned(apiKeyObj.ID); banned {
@@ -105,7 +105,9 @@ func AuthMiddleware(apiKey string, st *store.Store, rateLimiter *core.RateLimite
 						return
 					}
 
-					allowed, reason := rateLimiter.AllowWithTool(apiKeyObj.ID, apiKeyObj.Limits, tool)
+					// Enter() checks RPM, daily quota, tool quota, and concurrent limit
+					// in one atomic critical section; release decrements concurrency when done.
+					allowed, reason, release := rateLimiter.Enter(apiKeyObj.ID, apiKeyObj.Limits, tool)
 					if !allowed {
 						c.JSON(429, model.ErrorResponse{
 							Error: model.ErrorDetail{
@@ -117,6 +119,8 @@ func AuthMiddleware(apiKey string, st *store.Store, rateLimiter *core.RateLimite
 						c.Abort()
 						return
 					}
+					// Release the concurrent token after the entire handler chain finishes.
+					defer release()
 				}
 
 				// Update last used (async)

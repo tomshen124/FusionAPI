@@ -249,15 +249,17 @@ func (h *HealthChecker) detectCPAModels(src *model.Source, status *model.SourceS
 		detectedProviderSet[m.Provider] = true
 	}
 
+	// Update status ModelProviders (will be set atomically via SetStatus in checkSource)
 	status.ModelProviders = modelProviders
 
-	// 更新源的模型列表
+	// Build new Capabilities and update atomically via SetCapabilities
+	newCaps := src.GetCapabilities()
 	if len(detectedModels) > 0 {
-		src.Capabilities.Models = detectedModels
+		newCaps.Models = detectedModels
 	}
 
 	// 根据探测到的 provider 动态更新能力声明（Thinking 始终不支持）
-	src.Capabilities.ExtendedThinking = false
+	newCaps.ExtendedThinking = false
 	if len(detectedProviderSet) > 0 {
 		hasFC := false
 		hasVision := false
@@ -271,9 +273,12 @@ func (h *HealthChecker) detectCPAModels(src *model.Source, status *model.SourceS
 				}
 			}
 		}
-		src.Capabilities.FunctionCalling = hasFC
-		src.Capabilities.Vision = hasVision
+		newCaps.FunctionCalling = hasFC
+		newCaps.Vision = hasVision
 	}
+
+	// Atomically update capabilities
+	src.SetCapabilities(newCaps)
 
 	if len(detectedModels) > 0 {
 		log.Printf("[CPA] %s: detected %d models from %d providers",

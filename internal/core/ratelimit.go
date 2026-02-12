@@ -9,7 +9,7 @@ import (
 )
 
 const (
-	AutoBanThreshold = 50              // 连续错误数阈值
+	AutoBanThreshold = 50               // 连续错误数阈值
 	AutoBanDuration  = 30 * time.Minute // 自动封禁持续时间
 )
 
@@ -35,6 +35,93 @@ func NewRateLimiter() *RateLimiter {
 	// Start cleanup goroutine
 	go rl.cleanup()
 	return rl
+}
+
+// Enter performs an atomic "check + accounting + (optional) concurrent token acquisition".
+//
+// It returns (allowed, reason, release).
+// The release function is always non-nil and is safe to call multiple times.
+func (r *RateLimiter) Enter(keyID string, limits model.KeyLimits, tool string) (bool, string, func()) {
+	// Always return a non-nil release to simplify callers.
+	var once sync.Once
+	release := func() {
+		once.Do(func() {
+			if limits.Concurrent <= 0 {
+				return
+			}
+			r.mu.Lock()
+			defer r.mu.Unlock()
+			if r.concurrent[keyID] > 0 {
+				r.concurrent[keyID]--
+			}
+		})
+	}
+
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	now := time.Now()
+
+	// Check RPM
+	if limits.RPM > 0 {
+		windowStart := now.Add(-time.Minute)
+		timestamps := r.windows[keyID]
+		// Clean old entries
+		valid := timestamps[:0]
+		for _, t := range timestamps {
+			if t.After(windowStart) {
+				valid = append(valid, t)
+			}
+		}
+		r.windows[keyID] = valid
+		if len(valid) >= limits.RPM {
+			return false, fmt.Sprintf("RPM limit exceeded (%d/%d)", len(valid), limits.RPM), release
+		}
+	}
+
+	// Check daily quota
+	if limits.DailyQuota > 0 {
+		dateKey := keyID + ":" + now.Format("2006-01-02")
+		if r.dailyCount[dateKey] >= limits.DailyQuota {
+			return false, fmt.Sprintf("Daily quota exceeded (%d/%d)", r.dailyCount[dateKey], limits.DailyQuota), release
+		}
+	}
+
+	// Check tool quota first (avoid charging RPM/daily quota if tool quota is exceeded)
+	var toolDateKey string
+	if tool != "" && tool != "unknown" && len(limits.ToolQuotas) > 0 {
+		if quota, ok := limits.ToolQuotas[tool]; ok && quota > 0 {
+			toolDateKey = keyID + ":" + tool + ":" + now.Format("2006-01-02")
+			current := r.dailyCount[toolDateKey]
+			if current >= quota {
+				return false, fmt.Sprintf("Tool quota exceeded for %s (%d/%d)", tool, current, quota), release
+			}
+		}
+	}
+
+	// Check concurrent
+	if limits.Concurrent > 0 {
+		if r.concurrent[keyID] >= limits.Concurrent {
+			return false, fmt.Sprintf("Concurrent limit exceeded (%d/%d)", r.concurrent[keyID], limits.Concurrent), release
+		}
+	}
+
+	// Record accounting (only after all checks pass)
+	if limits.RPM > 0 {
+		r.windows[keyID] = append(r.windows[keyID], now)
+	}
+	if limits.DailyQuota > 0 {
+		dateKey := keyID + ":" + now.Format("2006-01-02")
+		r.dailyCount[dateKey]++
+	}
+	if toolDateKey != "" {
+		r.dailyCount[toolDateKey]++
+	}
+	if limits.Concurrent > 0 {
+		r.concurrent[keyID]++
+	}
+
+	return true, "", release
 }
 
 // Allow 检查是否允许请求
@@ -70,13 +157,6 @@ func (r *RateLimiter) Allow(keyID string, limits model.KeyLimits) (bool, string)
 		}
 	}
 
-	// Check concurrent
-	if limits.Concurrent > 0 {
-		if r.concurrent[keyID] >= limits.Concurrent {
-			return false, fmt.Sprintf("Concurrent limit exceeded (%d/%d)", r.concurrent[keyID], limits.Concurrent)
-		}
-	}
-
 	// Record the request
 	if limits.RPM > 0 {
 		r.windows[keyID] = append(r.windows[keyID], now)
@@ -91,25 +171,57 @@ func (r *RateLimiter) Allow(keyID string, limits model.KeyLimits) (bool, string)
 
 // AllowWithTool 检查是否允许请求（含工具配额）
 func (r *RateLimiter) AllowWithTool(keyID string, limits model.KeyLimits, tool string) (bool, string) {
-	// 先调用 Allow 的逻辑
-	allowed, reason := r.Allow(keyID, limits)
-	if !allowed {
-		return allowed, reason
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	now := time.Now()
+
+	// Check RPM
+	if limits.RPM > 0 {
+		windowStart := now.Add(-time.Minute)
+		timestamps := r.windows[keyID]
+		valid := timestamps[:0]
+		for _, t := range timestamps {
+			if t.After(windowStart) {
+				valid = append(valid, t)
+			}
+		}
+		r.windows[keyID] = valid
+		if len(valid) >= limits.RPM {
+			return false, fmt.Sprintf("RPM limit exceeded (%d/%d)", len(valid), limits.RPM)
+		}
 	}
 
-	// 检查工具配额
+	// Check daily quota
+	if limits.DailyQuota > 0 {
+		dateKey := keyID + ":" + now.Format("2006-01-02")
+		if r.dailyCount[dateKey] >= limits.DailyQuota {
+			return false, fmt.Sprintf("Daily quota exceeded (%d/%d)", r.dailyCount[dateKey], limits.DailyQuota)
+		}
+	}
+
+	// Check tool quota before charging other quotas
+	var toolDateKey string
 	if tool != "" && tool != "unknown" && len(limits.ToolQuotas) > 0 {
 		if quota, ok := limits.ToolQuotas[tool]; ok && quota > 0 {
-			r.mu.Lock()
-			toolDateKey := keyID + ":" + tool + ":" + time.Now().Format("2006-01-02")
+			toolDateKey = keyID + ":" + tool + ":" + now.Format("2006-01-02")
 			current := r.dailyCount[toolDateKey]
 			if current >= quota {
-				r.mu.Unlock()
 				return false, fmt.Sprintf("Tool quota exceeded for %s (%d/%d)", tool, current, quota)
 			}
-			r.dailyCount[toolDateKey]++
-			r.mu.Unlock()
 		}
+	}
+
+	// Record accounting
+	if limits.RPM > 0 {
+		r.windows[keyID] = append(r.windows[keyID], now)
+	}
+	if limits.DailyQuota > 0 {
+		dateKey := keyID + ":" + now.Format("2006-01-02")
+		r.dailyCount[dateKey]++
+	}
+	if toolDateKey != "" {
+		r.dailyCount[toolDateKey]++
 	}
 
 	return true, ""

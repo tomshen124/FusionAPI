@@ -3,6 +3,7 @@ package core
 import (
 	"errors"
 	"sort"
+	"sync"
 	"sync/atomic"
 
 	"github.com/xiaopang/fusionapi/internal/model"
@@ -25,9 +26,10 @@ var (
 
 // Router 路由器
 type Router struct {
-	manager  *SourceManager
-	strategy string
-	rrIndex  uint64 // round-robin 索引
+	manager    *SourceManager
+	strategy   string
+	strategyMu sync.RWMutex
+	rrIndex    uint64 // round-robin 索引
 }
 
 // NewRouter 创建路由器
@@ -36,6 +38,13 @@ func NewRouter(manager *SourceManager, strategy string) *Router {
 		manager:  manager,
 		strategy: strategy,
 	}
+}
+
+// getStrategy 获取当前路由策略（线程安全）
+func (r *Router) getStrategy() string {
+	r.strategyMu.RLock()
+	defer r.strategyMu.RUnlock()
+	return r.strategy
 }
 
 // RouteRequest 为请求选择源
@@ -105,7 +114,8 @@ func (r *Router) RouteRequest(req *model.ChatCompletionRequest, exclude []string
 	}
 
 	// 根据策略选择
-	switch r.strategy {
+	strategy := r.getStrategy()
+	switch strategy {
 	case StrategyRoundRobin:
 		return r.roundRobin(candidates), nil
 	case StrategyWeighted:
@@ -222,7 +232,9 @@ func (r *Router) leastCost(candidates []*model.Source) *model.Source {
 	return candidates[0]
 }
 
-// SetStrategy 设置路由策略
+// SetStrategy 设置路由策略（线程安全）
 func (r *Router) SetStrategy(strategy string) {
+	r.strategyMu.Lock()
+	defer r.strategyMu.Unlock()
 	r.strategy = strategy
 }

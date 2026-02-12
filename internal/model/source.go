@@ -101,16 +101,41 @@ type SourceStatusResponse struct {
 	LastError  string      `json:"last_error"`
 }
 
-// GetStatus 获取状态（线程安全）
+// GetStatus 获取状态（线程安全，深拷贝）
 func (s *Source) GetStatus() *SourceStatus {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	if s.Status == nil {
 		return &SourceStatus{State: HealthStateHealthy}
 	}
-	// 返回副本
+	// 返回深拷贝（包括 ModelProviders map）
 	status := *s.Status
+	if s.Status.ModelProviders != nil {
+		status.ModelProviders = make(CPAModelProviderMap, len(s.Status.ModelProviders))
+		for k, v := range s.Status.ModelProviders {
+			status.ModelProviders[k] = v
+		}
+	}
 	return &status
+}
+
+// GetCapabilities 获取能力声明（线程安全，深拷贝）
+func (s *Source) GetCapabilities() Capabilities {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	caps := s.Capabilities
+	if len(s.Capabilities.Models) > 0 {
+		caps.Models = make([]string, len(s.Capabilities.Models))
+		copy(caps.Models, s.Capabilities.Models)
+	}
+	return caps
+}
+
+// SetCapabilities 设置能力声明（线程安全）
+func (s *Source) SetCapabilities(caps Capabilities) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.Capabilities = caps
 }
 
 // SetStatus 设置状态（线程安全）
@@ -130,12 +155,13 @@ func (s *Source) IsHealthy() bool {
 	return s.Status.State == HealthStateHealthy
 }
 
-// SupportsModel 检查源是否支持指定模型
+// SupportsModel 检查源是否支持指定模型（线程安全）
 func (s *Source) SupportsModel(model string) bool {
-	if len(s.Capabilities.Models) == 0 {
+	caps := s.GetCapabilities()
+	if len(caps.Models) == 0 {
 		return true // 未声明模型列表则认为支持所有
 	}
-	for _, m := range s.Capabilities.Models {
+	for _, m := range caps.Models {
 		if m == model {
 			return true
 		}
@@ -160,6 +186,7 @@ type SourceResponse struct {
 // ToResponse 转换为响应格式（隐藏 API Key）
 func (s *Source) ToResponse() SourceResponse {
 	status := s.GetStatus()
+	caps := s.GetCapabilities()
 	var statusResp *SourceStatusResponse
 	if status != nil {
 		statusResp = &SourceStatusResponse{
@@ -180,26 +207,28 @@ func (s *Source) ToResponse() SourceResponse {
 		Priority:     s.Priority,
 		Weight:       s.Weight,
 		Enabled:      s.Enabled,
-		Capabilities: s.Capabilities,
+		Capabilities: caps,
 		CPA:          s.CPA,
 		Status:       statusResp,
 	}
 }
 
-// GetProviderForModel 获取 CPA 源中模型对应的 provider
+// GetProviderForModel 获取 CPA 源中模型对应的 provider（线程安全）
 func (s *Source) GetProviderForModel(modelName string) string {
-	if s.Status != nil && s.Status.ModelProviders != nil {
-		if provider, ok := s.Status.ModelProviders[modelName]; ok {
+	status := s.GetStatus()
+	if status.ModelProviders != nil {
+		if provider, ok := status.ModelProviders[modelName]; ok {
 			return provider
 		}
 	}
 	return ""
 }
 
-// SupportsFCForModel 检查 CPA 源对特定模型是否支持 FC
+// SupportsFCForModel 检查 CPA 源对特定模型是否支持 FC（线程安全）
 func (s *Source) SupportsFCForModel(modelName string) bool {
 	if s.Type != SourceTypeCPA {
-		return s.Capabilities.FunctionCalling
+		caps := s.GetCapabilities()
+		return caps.FunctionCalling
 	}
 	provider := s.GetProviderForModel(modelName)
 	if provider != "" && !s.IsCPAProviderEnabled(provider) {
@@ -215,7 +244,8 @@ func (s *Source) SupportsFCForModel(modelName string) bool {
 			}
 			return false
 		}
-		return s.Capabilities.FunctionCalling // fallback 到通用声明
+		caps := s.GetCapabilities()
+		return caps.FunctionCalling // fallback 到通用声明
 	}
 	if cap, ok := CPAProviderCapabilities[provider]; ok {
 		return cap.FC
