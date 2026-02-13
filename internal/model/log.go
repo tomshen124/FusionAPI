@@ -4,12 +4,12 @@ import "time"
 
 // RequestLog 请求日志
 type RequestLog struct {
-	ID        string    `json:"id"`
-	RequestID string    `json:"request_id,omitempty"`
-	Timestamp time.Time `json:"timestamp"`
-	SourceID  string    `json:"source_id"`
-	SourceName string   `json:"source_name"`
-	Model     string    `json:"model"`
+	ID         string    `json:"id"`
+	RequestID  string    `json:"request_id,omitempty"`
+	Timestamp  time.Time `json:"timestamp"`
+	SourceID   string    `json:"source_id"`
+	SourceName string    `json:"source_name"`
+	Model      string    `json:"model"`
 
 	// 请求信息
 	HasTools    bool `json:"has_tools"`
@@ -57,8 +57,8 @@ type UsageStats struct {
 
 // DailyStats 每日统计汇总
 type DailyStats struct {
-	Date         string  `json:"date"`
-	TotalRequests int    `json:"total_requests"`
+	Date          string  `json:"date"`
+	TotalRequests int     `json:"total_requests"`
 	SuccessRate   float64 `json:"success_rate"`
 	TotalTokens   int64   `json:"total_tokens"`
 	AvgLatency    float64 `json:"avg_latency_ms"`
@@ -77,6 +77,7 @@ type SourceStats struct {
 // LogQuery 日志查询参数
 type LogQuery struct {
 	SourceID   string    `form:"source_id"`
+	RequestID  string    `form:"request_id"`
 	Model      string    `form:"model"`
 	Success    *bool     `form:"success"`
 	StartTime  time.Time `form:"start_time"`

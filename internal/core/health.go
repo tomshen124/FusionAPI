@@ -5,12 +5,12 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
-	"log"
 	"net/http"
 	"sync"
 	"time"
 
 	"github.com/xiaopang/fusionapi/internal/config"
+	"github.com/xiaopang/fusionapi/internal/logger"
 	"github.com/xiaopang/fusionapi/internal/model"
 )
 
@@ -145,7 +145,12 @@ func (h *HealthChecker) checkSource(src *model.Source) {
 		status.ConsecutiveFail++
 		status.ErrorCount++
 		status.LastError = probeErr.Error()
-		log.Printf("[HealthCheck] %s failed: %v (consecutive: %d)", src.Name, probeErr, status.ConsecutiveFail)
+		logger.Warn("healthcheck_failed",
+			"source_id", src.ID,
+			"source_name", src.Name,
+			"err", probeErr.Error(),
+			"consecutive", status.ConsecutiveFail,
+		)
 
 		if status.ConsecutiveFail >= h.cfg.FailureThreshold {
 			status.State = model.HealthStateUnhealthy
@@ -233,7 +238,11 @@ func (h *HealthChecker) probeAndDetectCPAModels(src *model.Source, status *model
 	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
 		// Source is reachable but response is unparseable — not a health failure,
 		// just skip model detection.
-		log.Printf("[CPA] %s: model list decode error: %v", src.Name, err)
+		logger.Warn("cpa_model_list_decode_error",
+			"source_id", src.ID,
+			"source_name", src.Name,
+			"err", err.Error(),
+		)
 		return nil
 	}
 
@@ -281,8 +290,12 @@ func (h *HealthChecker) probeAndDetectCPAModels(src *model.Source, status *model
 	}
 
 	if len(detectedModels) > 0 {
-		log.Printf("[CPA] %s: detected %d models from %d providers",
-			src.Name, len(detectedModels), countUniqueProviders(modelProviders))
+		logger.Info("cpa_models_detected",
+			"source_id", src.ID,
+			"source_name", src.Name,
+			"models", len(detectedModels),
+			"providers", countUniqueProviders(modelProviders),
+		)
 	}
 
 	return nil

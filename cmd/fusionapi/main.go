@@ -3,7 +3,6 @@ package main
 import (
 	"flag"
 	"fmt"
-	"log"
 	"os"
 	"os/signal"
 	"syscall"
@@ -24,9 +23,10 @@ func main() {
 	// 加载配置
 	cfg, err := config.Load(*configPath)
 	if err != nil {
-		log.Fatalf("Failed to load config: %v", err)
+		logger.Error("failed to load config", "err", err)
+		os.Exit(1)
 	}
-	log.Printf("Config loaded from %s", *configPath)
+	logger.Info("config loaded", "path", *configPath)
 
 	// Apply logging level
 	logger.SetLevel(logger.ParseLevel(cfg.Logging.Level))
@@ -35,15 +35,16 @@ func main() {
 	// 初始化存储
 	db, err := store.New(cfg.Database.Path)
 	if err != nil {
-		log.Fatalf("Failed to init database: %v", err)
+		logger.Error("failed to init database", "err", err, "path", cfg.Database.Path)
+		os.Exit(1)
 	}
 	defer db.Close()
-	log.Printf("Database initialized at %s", cfg.Database.Path)
+	logger.Info("database initialized", "path", cfg.Database.Path)
 
 	// Initialize log retention cleanup
 	if cfg.Logging.RetentionDays > 0 {
 		if deleted, err := db.CleanOldLogs(cfg.Logging.RetentionDays); err != nil {
-			logger.Warn("log retention cleanup failed", "err", err, "retention_days", cfg.Logging.RetentionDays)
+			logger.Warn("log retention cleanup failed", "err", err.Error(), "retention_days", cfg.Logging.RetentionDays)
 		} else if deleted > 0 {
 			logger.Info("log retention cleanup", "deleted", deleted, "retention_days", cfg.Logging.RetentionDays)
 		}
@@ -53,7 +54,7 @@ func main() {
 			defer ticker.Stop()
 			for range ticker.C {
 				if deleted, err := db.CleanOldLogs(cfg.Logging.RetentionDays); err != nil {
-					logger.Warn("log retention cleanup failed", "err", err, "retention_days", cfg.Logging.RetentionDays)
+					logger.Warn("log retention cleanup failed", "err", err.Error(), "retention_days", cfg.Logging.RetentionDays)
 				} else if deleted > 0 {
 					logger.Info("log retention cleanup", "deleted", deleted, "retention_days", cfg.Logging.RetentionDays)
 				}
@@ -66,27 +67,27 @@ func main() {
 
 	// 从数据库加载源
 	if err := manager.Load(); err != nil {
-		log.Printf("Warning: failed to load sources from db: %v", err)
+		logger.Warn("failed to load sources from db", "err", err.Error())
 	}
 
 	// 从配置文件加载源（会合并到数据库）
 	if len(cfg.Sources) > 0 {
 		if err := manager.LoadFromConfig(cfg.Sources); err != nil {
-			log.Printf("Warning: failed to load sources from config: %v", err)
+			logger.Warn("failed to load sources from config", "err", err.Error())
 		}
-		log.Printf("Loaded %d sources from config", len(cfg.Sources))
+		logger.Info("loaded sources from config", "count", len(cfg.Sources))
 	}
 
 	// 初始化路由器
 	router := core.NewRouter(manager, cfg.Routing.Strategy)
-	log.Printf("Router initialized with strategy: %s", cfg.Routing.Strategy)
+	logger.Info("router initialized", "strategy", cfg.Routing.Strategy)
 
 	// 初始化健康检查器
 	healthChecker := core.NewHealthChecker(manager, &cfg.HealthCheck)
 	healthChecker.Start()
 	defer healthChecker.Stop()
 	if cfg.HealthCheck.Enabled {
-		log.Printf("Health checker started (interval: %ds)", cfg.HealthCheck.Interval)
+		logger.Info("health checker started", "interval_s", cfg.HealthCheck.Interval)
 	}
 
 	// 初始化转换器
@@ -104,18 +105,19 @@ func main() {
 
 	// 启动服务器
 	addr := fmt.Sprintf("%s:%d", cfg.Server.Host, cfg.Server.Port)
-	log.Printf("FusionAPI starting on %s", addr)
+	logger.Info("fusionapi starting", "addr", addr)
 
 	// 优雅关闭
 	go func() {
 		sigCh := make(chan os.Signal, 1)
 		signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
 		<-sigCh
-		log.Println("Shutting down...")
+		logger.Info("shutting down")
 		os.Exit(0)
 	}()
 
 	if err := r.Run(addr); err != nil {
-		log.Fatalf("Failed to start server: %v", err)
+		logger.Error("failed to start server", "err", err, "addr", addr)
+		os.Exit(1)
 	}
 }

@@ -226,6 +226,10 @@ func (s *Store) QueryLogs(query *model.LogQuery) ([]*model.RequestLog, error) {
 		sql += " AND source_id = ?"
 		args = append(args, query.SourceID)
 	}
+	if query.RequestID != "" {
+		sql += " AND request_id = ?"
+		args = append(args, query.RequestID)
+	}
 	if query.Model != "" {
 		sql += " AND model = ?"
 		args = append(args, query.Model)
@@ -424,7 +428,6 @@ func parseSQLiteTime(v any) time.Time {
 		return time.Time{}
 	}
 }
-
 
 // parseTimeStr parses SQLite datetime strings into time.Time.
 func parseTimeStr(s string) time.Time {
