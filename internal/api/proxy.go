@@ -13,6 +13,7 @@ import (
 	"github.com/gin-gonic/gin"
 	"github.com/xiaopang/fusionapi/internal/config"
 	"github.com/xiaopang/fusionapi/internal/core"
+	"github.com/xiaopang/fusionapi/internal/logger"
 	"github.com/xiaopang/fusionapi/internal/model"
 	"github.com/xiaopang/fusionapi/internal/store"
 )
@@ -71,6 +72,7 @@ func (h *ProxyHandler) ChatCompletions(c *gin.Context) {
 
 	// 记录开始时间
 	startTime := time.Now()
+	requestID := requestIDFromContext(c)
 	var lastError error
 	var triedSources []string
 	var failoverFrom string
@@ -91,6 +93,17 @@ func (h *ProxyHandler) ChatCompletions(c *gin.Context) {
 
 		triedSources = append(triedSources, src.ID)
 
+		logger.Info("proxy_route",
+			"request_id", requestID,
+			"attempt", attempt,
+			"source_id", src.ID,
+			"source_name", src.Name,
+			"model", req.Model,
+			"stream", req.Stream,
+			"has_tools", req.HasTools(),
+			"fc_compat_candidate", req.HasTools() && !sourceSupportsFC(src, req.Model),
+		)
+
 		// 转换请求
 		translatedReq := h.translator.TranslateRequest(&req, src)
 
@@ -101,6 +114,12 @@ func (h *ProxyHandler) ChatCompletions(c *gin.Context) {
 			if h.handleFCCompatRequest(c, &req, translatedReq, src, startTime, failoverFrom, clientInfo) {
 				return // 成功
 			}
+			logger.Warn("failover",
+				"request_id", requestID,
+				"from_source_id", failoverFrom,
+				"to_source_id", src.ID,
+				"reason", "fc_compat_failed",
+			)
 			failoverFrom = src.ID
 			lastError = fmt.Errorf("source %s fc_compat failed", src.Name)
 		} else {
@@ -110,6 +129,12 @@ func (h *ProxyHandler) ChatCompletions(c *gin.Context) {
 				if ok {
 					return
 				}
+				logger.Warn("failover",
+					"request_id", requestID,
+					"from_source_id", failoverFrom,
+					"to_source_id", src.ID,
+					"reason", "stream_failed",
+				)
 				failoverFrom = src.ID
 				if err != nil {
 					lastError = err
@@ -121,6 +146,12 @@ func (h *ProxyHandler) ChatCompletions(c *gin.Context) {
 				if ok {
 					return
 				}
+				logger.Warn("failover",
+					"request_id", requestID,
+					"from_source_id", failoverFrom,
+					"to_source_id", src.ID,
+					"reason", "request_failed",
+				)
 				failoverFrom = src.ID
 				if err != nil {
 					lastError = err
@@ -132,7 +163,13 @@ func (h *ProxyHandler) ChatCompletions(c *gin.Context) {
 	}
 
 	// 所有尝试都失败
-	h.logRequest(requestIDFromContext(c), &req, nil, nil, startTime, 500, lastError, failoverFrom, clientInfo, false)
+	logger.Error("all_sources_failed",
+		"request_id", requestID,
+		"tried_sources", triedSources,
+		"attempts", len(triedSources),
+		"err", lastError.Error(),
+	)
+	h.logRequest(requestID, &req, nil, nil, startTime, 500, lastError, failoverFrom, clientInfo, false)
 	c.JSON(500, model.ErrorResponse{
 		Error: model.ErrorDetail{
 			Message: "All sources failed: " + lastError.Error(),
@@ -144,6 +181,17 @@ func (h *ProxyHandler) ChatCompletions(c *gin.Context) {
 
 // handleNormalRequest 处理非流式请求
 func (h *ProxyHandler) handleNormalRequest(c *gin.Context, req *model.ChatCompletionRequest, src *model.Source, startTime time.Time, failoverFrom string, clientInfo *model.ClientInfo) (bool, error) {
+	attemptStart := time.Now()
+	requestID := requestIDFromContext(c)
+
+	logger.Info("upstream_request_start",
+		"request_id", requestID,
+		"source_id", src.ID,
+		"source_name", src.Name,
+		"model", req.Model,
+		"stream", false,
+	)
+
 	// 构建请求
 	body, _ := json.Marshal(req)
 	httpReq, err := http.NewRequestWithContext(c.Request.Context(), "POST", src.BaseURL+"/v1/chat/completions", bytes.NewReader(body))
@@ -152,14 +200,32 @@ func (h *ProxyHandler) handleNormalRequest(c *gin.Context, req *model.ChatComple
 	}
 
 	h.setHeaders(httpReq, src)
+	if requestID != "" {
+		httpReq.Header.Set("X-Request-ID", requestID)
+	}
 
 	// 发送请求
 	resp, err := h.client.Do(httpReq)
 	if err != nil {
+		logger.Warn("upstream_request_error",
+			"request_id", requestID,
+			"source_id", src.ID,
+			"source_name", src.Name,
+			"err", err.Error(),
+			"latency_ms", time.Since(attemptStart).Milliseconds(),
+		)
 		h.updateSourceLatency(src, time.Since(startTime), err)
 		return false, fmt.Errorf("[%s] %w", src.Name, err)
 	}
 	defer resp.Body.Close()
+
+	logger.Info("upstream_request_end",
+		"request_id", requestID,
+		"source_id", src.ID,
+		"source_name", src.Name,
+		"status_code", resp.StatusCode,
+		"latency_ms", time.Since(attemptStart).Milliseconds(),
+	)
 
 	// 读取响应（限制 512KB 防止 OOM）
 	respBody, err := io.ReadAll(io.LimitReader(resp.Body, 512*1024))
@@ -184,7 +250,7 @@ func (h *ProxyHandler) handleNormalRequest(c *gin.Context, req *model.ChatComple
 	h.updateSourceLatency(src, time.Since(startTime), nil)
 
 	// 记录日志
-	h.logRequest(requestIDFromContext(c), req, &chatResp, src, startTime, resp.StatusCode, nil, failoverFrom, clientInfo, false)
+	h.logRequest(requestID, req, &chatResp, src, startTime, resp.StatusCode, nil, failoverFrom, clientInfo, false)
 
 	// 返回响应
 	c.JSON(resp.StatusCode, chatResp)
@@ -193,6 +259,17 @@ func (h *ProxyHandler) handleNormalRequest(c *gin.Context, req *model.ChatComple
 
 // handleStreamRequest 处理流式请求
 func (h *ProxyHandler) handleStreamRequest(c *gin.Context, req *model.ChatCompletionRequest, src *model.Source, startTime time.Time, failoverFrom string, clientInfo *model.ClientInfo) (bool, error) {
+	attemptStart := time.Now()
+	requestID := requestIDFromContext(c)
+
+	logger.Info("upstream_request_start",
+		"request_id", requestID,
+		"source_id", src.ID,
+		"source_name", src.Name,
+		"model", req.Model,
+		"stream", true,
+	)
+
 	// 构建请求
 	body, _ := json.Marshal(req)
 	httpReq, err := http.NewRequestWithContext(c.Request.Context(), "POST", src.BaseURL+"/v1/chat/completions", bytes.NewReader(body))
@@ -201,10 +278,20 @@ func (h *ProxyHandler) handleStreamRequest(c *gin.Context, req *model.ChatComple
 	}
 
 	h.setHeaders(httpReq, src)
+	if requestID != "" {
+		httpReq.Header.Set("X-Request-ID", requestID)
+	}
 
 	// 发送请求
 	resp, err := h.client.Do(httpReq)
 	if err != nil {
+		logger.Warn("upstream_request_error",
+			"request_id", requestID,
+			"source_id", src.ID,
+			"source_name", src.Name,
+			"err", err.Error(),
+			"latency_ms", time.Since(attemptStart).Milliseconds(),
+		)
 		h.updateSourceLatency(src, time.Since(startTime), err)
 		return false, fmt.Errorf("[%s] %w", src.Name, err)
 	}
@@ -214,9 +301,25 @@ func (h *ProxyHandler) handleStreamRequest(c *gin.Context, req *model.ChatComple
 	if resp.StatusCode != http.StatusOK {
 		errBody, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
 		upstreamErr := truncateBody(errBody, 4096)
+		logger.Warn("upstream_request_error",
+			"request_id", requestID,
+			"source_id", src.ID,
+			"source_name", src.Name,
+			"status_code", resp.StatusCode,
+			"latency_ms", time.Since(attemptStart).Milliseconds(),
+			"err", upstreamErr,
+		)
 		h.updateSourceLatency(src, time.Since(startTime), fmt.Errorf("status %d", resp.StatusCode))
 		return false, fmt.Errorf("[%s] status %d: %s", src.Name, resp.StatusCode, upstreamErr)
 	}
+
+	logger.Info("upstream_request_end",
+		"request_id", requestID,
+		"source_id", src.ID,
+		"source_name", src.Name,
+		"status_code", resp.StatusCode,
+		"latency_ms", time.Since(attemptStart).Milliseconds(),
+	)
 
 	// 设置 SSE 响应头
 	c.Header("Content-Type", "text/event-stream")
@@ -234,6 +337,12 @@ func (h *ProxyHandler) handleStreamRequest(c *gin.Context, req *model.ChatComple
 			if err == io.EOF {
 				break
 			}
+			logger.Warn("stream_read_error",
+				"request_id", requestID,
+				"source_id", src.ID,
+				"source_name", src.Name,
+				"err", err.Error(),
+			)
 			return true, nil // 已开始流式输出，不能回退
 		}
 
@@ -268,7 +377,7 @@ func (h *ProxyHandler) handleStreamRequest(c *gin.Context, req *model.ChatComple
 	h.updateSourceLatency(src, time.Since(startTime), nil)
 
 	// 记录日志（流式请求无法获取完整 token 统计）
-	h.logStreamRequest(requestIDFromContext(c), req, src, startTime, totalTokens, failoverFrom, clientInfo, false)
+	h.logStreamRequest(requestID, req, src, startTime, totalTokens, failoverFrom, clientInfo, false)
 
 	return true, nil
 }

@@ -71,6 +71,11 @@ func (h *ProxyHandler) sendChatRequest(c *gin.Context, req *model.ChatCompletion
 	}
 	h.setHeaders(httpReq, src)
 
+	// Propagate X-Request-ID to upstream
+	if rid := requestIDFromContext(c); rid != "" {
+		httpReq.Header.Set("X-Request-ID", rid)
+	}
+
 	resp, err := h.client.Do(httpReq)
 	if err != nil {
 		return nil, err
